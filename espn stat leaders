@@ -1,0 +1,70 @@
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+
+URL = "https://www.espn.com/nfl/stats/player/_/view/offense/table/passing"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.espn.com/"
+}
+
+# Fetch & parse
+resp = requests.get(URL, headers=HEADERS, timeout=30)
+resp.raise_for_status()
+soup = BeautifulSoup(resp.text, "lxml")  # or "html.parser"
+
+# LEFT: rank + name + team
+player_summary = {}
+for player_info_row in soup.select(".Table--fixed-left tbody tr.Table__TR"):
+    row_index = player_info_row.get("data-idx")
+    if not row_index:
+        continue
+
+    player_cells = player_info_row.select("td.Table__TD")
+    rk = player_cells[0].get_text(strip=True) if player_cells else ""
+
+    player_name_tag = player_info_row.select_one("a.AnchorLink")
+    name = player_name_tag.get_text(strip=True) if player_name_tag else ""
+
+    team_node = player_info_row.select_one(".athleteCell__teamAbbrev")
+    team = team_node.get_text(strip=True) if team_node else ""
+
+    player_summary[row_index] = {"RK": rk, "Name": name, "Team": team}
+
+# RIGHT: headers + stat cells
+stat_headers = [th.get_text(strip=True) for th in soup.select(".Table__Scroller thead th")]
+header_positions = {h: i for i, h in enumerate(stat_headers)}
+
+desired_columns = ["POS","GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG","TD","INT","SACK","SYL","QBR","RTG"]
+
+player_stats = {}
+for stat_row in soup.select(".Table__Scroller tbody tr.Table__TR"):
+    row_index = stat_row.get("data-idx")
+    if not row_index:
+        continue
+
+    player_stats_cells = [td.get_text(strip=True) for td in stat_row.select("td.Table__TD")]
+
+    player_stat_line = {
+        h: (player_stats_cells[header_positions[h]] if h in header_positions and header_positions[h] < len(player_stats_cells) else "")
+        for h in desired_columns
+    }
+    player_stats[row_index] = player_stat_line
+
+# MERGE and DataFrame
+merged_player_records = []
+for row_index in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
+    merged_player_record = {**player_summary.get(row_index, {}), **player_stats.get(row_index, {})}
+    merged_player_records.append(merged_player_record)
+
+order = ["RK","Name","Team","POS","GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG","TD","INT","SACK","SYL","QBR","RTG"]
+df = pd.DataFrame(merged_player_records)
+df = df[[c for c in order if c in df.columns]]
+
+# Save to CSV
+df.to_csv("espn_passing.csv", index=False)
+
+print(df.head(47))
+
