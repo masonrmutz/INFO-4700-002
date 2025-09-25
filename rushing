@@ -1,0 +1,77 @@
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+
+URL = "https://www.espn.com/nfl/stats/player/_/stat/rushing"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.espn.com/"
+}
+
+# Fetch page
+resp = requests.get(URL, headers=HEADERS, timeout=30)
+resp.raise_for_status()
+soup = BeautifulSoup(resp.text, "lxml")
+
+#Find the specific table block for rushing
+rushing_block = None
+for block in soup.select("div.ResponsiveTable"):
+    # the rushing table has header links with /stat/rushing/ in them
+    if block.select_one('thead a[href*="/stat/rushing/"]'):
+        rushing_block = block
+        break
+
+if rushing_block is None:
+    raise RuntimeError("Couldn't find the rushing stats table on the page.")
+
+#LEFT: rank + name + team
+player_summary = {}
+for player_info_row in rushing_block.select(".Table--fixed-left tbody tr.Table__TR"):
+    idx = player_info_row.get("data-idx")
+    if not idx:
+        continue
+
+    player_cells = player_info_row.select("td.Table__TD")
+    rk = player_cells[0].get_text(strip=True) if player_cells else ""
+
+    player_name_tag = player_info_row.select_one("a.AnchorLink")
+    name = player_name_tag.get_text(strip=True) if player_name_tag else ""
+
+    team_node = player_info_row.select_one(".athleteCell__teamAbbrev")
+    team = team_node.get_text(strip=True) if team_node else ""
+
+    player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
+
+#RIGHT: headers + stat rows
+stat_headers = [th.get_text(strip=True) for th in rushing_block.select(".Table__Scroller thead th")]
+header_positions = {h: i for i, h in enumerate(stat_headers)}
+
+desired_columns = ["POS","GP","ATT","YDS","AVG","LNG","BIG","TD","YDS/G","FUM","LST","FD"]
+
+player_stats = {}
+for stat_row in rushing_block.select(".Table__Scroller tbody tr.Table__TR"):
+    idx = stat_row.get("data-idx")
+    if not idx:
+        continue
+    player_stats_cells = [td.get_text(strip=True) for td in stat_row.select("td.Table__TD")]
+    player_stat_line = {
+        h: (player_stats_cells[header_positions[h]] if h in header_positions and header_positions[h] < len(player_stats_cells) else "")
+        for h in desired_columns
+    }
+    player_stats[idx] = player_stat_line
+
+#MERGE + DataFrame
+rows = []
+for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
+    rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
+
+order = ["RK","Name","Team"] + desired_columns
+df_rushing = pd.DataFrame(rows)
+df_rushing = df_rushing[[c for c in order if c in df_rushing.columns]]
+
+# Save & preview
+df_rushing.to_csv("espn_rushing.csv", index=False)
+print(df_rushing.head(60))
+print("\nSaved to espn_rushing.csv")
