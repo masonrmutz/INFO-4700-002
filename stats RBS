@@ -1,3 +1,5 @@
+%pip install selenium webdriver-manager pandas lxml beautifulsoup4
+
 import time
 import pandas as pd
 from selenium import webdriver
