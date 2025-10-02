@@ -4,3 +4,4 @@ pandas
 selenium
 webdriver-manager
 shiny
+lxml
