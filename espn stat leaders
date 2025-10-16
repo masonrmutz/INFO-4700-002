@@ -150,8 +150,10 @@ def scrape_espn_passing_with_selenium(headless=True):
         df_passing = df_passing[[c for c in order if c in df_passing.columns]]
 
         # Save & preview
+        pd.set_option('display.max_rows', None)
+        pd.set_option('display.max_columns', None)
         df_passing.to_csv("espn_passing.csv", index=False)
-        print(df_passing.head(184))
+        print(df_passing)
         print("\nSaved to espn_passing.csv")
 
         return df_passing
