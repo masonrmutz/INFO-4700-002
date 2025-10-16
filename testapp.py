@@ -291,7 +291,7 @@ teams = ["All", "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "
 
 app_ui = ui.page_fluid(
     ui.h2("NFL Player Stats (ESPN Scraper)"),
-    ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing"]),
+    ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing", "WR Receiving"]),
     ui.input_select("team_select", "Select Team:", teams),
     ui.input_select("sort_by", "Sort By:", []),  # we will populate + set default in server
     ui.input_action_button("refresh", "Refresh Data"),
