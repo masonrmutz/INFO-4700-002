@@ -72,6 +72,8 @@ df_rushing = pd.DataFrame(rows)
 df_rushing = df_rushing[[c for c in order if c in df_rushing.columns]]
 
 # Save & preview
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
 df_rushing.to_csv("espn_rushing.csv", index=False)
-print(df_rushing.head(60))
+print(df_rushing)
 print("\nSaved to espn_rushing.csv")
