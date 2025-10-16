@@ -250,3 +250,5 @@ def server(input, output, session):
     @render.table
     def player_table():
         return df_filtered()
+app = App(app_ui, server)
+
