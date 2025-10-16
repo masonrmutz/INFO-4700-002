@@ -197,43 +197,54 @@ app_ui = ui.page_fluid(
     ui.h2("NFL Player Stats (ESPN Scraper)"),
     ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing"]),
     ui.input_select("team_select", "Select Team:", teams),
-    ui.input_select("sort_by", "Sort By:", []),  # dynamically updated
+    ui.input_select("sort_by", "Sort By:", []),  # we will populate + set default in server
     ui.input_action_button("refresh", "Refresh Data"),
     ui.output_table("player_table")
 )
 
-# =========================================================
-# Shiny Server
-# =========================================================
+# --- SERVER (replace your server() with this) ---
 def server(input, output, session):
 
-    # Update sort options dynamically
+    # Populate Sort By choices + a default whenever stat_type changes
     @reactive.effect
-    def _():
+    def _populate_sort_choices():
         if input.stat_type() == "QB Passing":
-            session.send_input_message("sort_by", {"choices": ["YDS", "TD", "INT", "QBR", "RTG"]})
+            choices = ["YDS", "TD", "INT", "QBR", "RTG"]
+            default = "YDS"
         else:
-            session.send_input_message("sort_by", {"choices": ["YDS", "TD", "AVG", "YDS/G", "FUM"]})
+            choices = ["YDS", "TD", "AVG", "YDS/G", "FUM"]
+            default = "YDS"
+        ui.update_select("sort_by", choices=choices, selected=default)
 
-    @reactive.event(input.refresh)
+    # Fetch/refresh data when the button is clicked (and also on stat_type change)
+    @reactive.Calc
+    @reactive.event(input.refresh, input.stat_type)
     def df_raw():
         if input.stat_type() == "QB Passing":
             return scrape_qb_stats()
         else:
+            # ⚠️ Selenium is brittle on Connect; consider converting this to requests+bs4
             return scrape_espn_rushing_with_selenium()
 
+    # Filter + sort reactively whenever inputs change
     @reactive.Calc
     def df_filtered():
-        df = df_raw()
+        df = df_raw().copy()
+
+        # Filter
         selected_team = input.team_select()
         if "Team" in df.columns and selected_team != "All":
             df = df[df["Team"] == selected_team]
 
+        # Sort (guard for None / invalid)
         sort_column = input.sort_by()
-        if sort_column in df.columns:
-            df = df.sort_values(by=sort_column, ascending=False)
+        if sort_column and sort_column in df.columns:
+            # Ensure numeric sort when appropriate
+            if df[sort_column].dtype == "O":
+                df[sort_column] = pd.to_numeric(df[sort_column], errors="ignore")
+            df = df.sort_values(by=sort_column, ascending=False, kind="mergesort")  # stable
 
-        return df
+        return df.reset_index(drop=True)
 
     @output
     @render.table
