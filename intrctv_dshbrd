@@ -4,10 +4,6 @@
 import os
 import time
 import pandas as pd
-import threading
-import requests
-from bs4 import BeautifulSoup
-
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -54,7 +50,6 @@ def build_driver(headless=True):
     )
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
 
-
 def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_clicks=100):
     left_rows_css = ".Table--fixed-left tbody tr.Table__TR[data-idx]"
     def row_count():
@@ -89,7 +84,7 @@ def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_cli
         clicks += 1
 
 # =========================================================
-# ESPN Scrapers (Passing / Rushing / Receiving)
+# Generic ESPN Scraper Function
 # =========================================================
 def scrape_espn_stats(url, cache_file, desired_columns, id_str):
     if os.path.exists(cache_file):
@@ -154,31 +149,29 @@ def scrape_espn_receiving_with_selenium():
         ["POS","GP","REC","TGTS","YDS","AVG","YDS/G","LNG","TD","20+","40+","FUM","LST","FD","YAC","DROP","CTCH%"], "receiving")
 
 # =========================================================
-# Shiny App with Interactive Altair Charts
+# Shiny App UI
 # =========================================================
-app_ui = ui.page_fluid(
-    ui.h2("🏈 ESPN NFL Player Stats Dashboard"),
-
-    ui.layout_sidebar(
-        ui.sidebar(
-            ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing", "WR Receiving"]),
-            ui.input_select("team_select", "Filter by Team:", TEAMS),
-            ui.input_text("player_search", "Search Player:"),
-            ui.input_select("player1", "Compare Player 1:", []),
-            ui.input_select("player2", "Compare Player 2:", []),
-            ui.input_action_button("refresh", "🔄 Refresh Data")
-        ),
-        ui.navset_tab(
-            ui.nav("Data Table", ui.output_data_frame("player_table")),
-            ui.nav("Interactive Chart", ui.output_plot("chart")),
-            ui.nav("Player Comparison", ui.output_ui("comparison_ui"))
-        )
-    )
+app_ui = ui.page_navbar(
+    ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
+    ui.nav_panel("Interactive Chart", ui.output_ui("chart")),  # now render as ui
+    ui.nav_panel("Player Comparison", ui.output_ui("comparison_ui")),
+    title="🏈 ESPN NFL Player Stats Dashboard",
+    sidebar=ui.sidebar(
+        ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing", "WR Receiving"]),
+        ui.input_select("team_select", "Filter by Team:", TEAMS),
+        ui.input_text("player_search", "Search Player:"),
+        ui.input_select("player1", "Compare Player 1:", []),
+        ui.input_select("player2", "Compare Player 2:", []),
+        ui.input_action_button("refresh", "🔄 Refresh Data")
+    ),
+    selected="Data Table"
 )
 
+# =========================================================
+# Server
+# =========================================================
 def server(input, output, session):
 
-    # Load and update data
     @reactive.Calc
     @reactive.event(input.refresh, input.stat_type)
     def df_raw():
@@ -208,46 +201,69 @@ def server(input, output, session):
     @output
     @render.data_frame
     def player_table():
-        return render.DataTable(df_filtered(), filters=True, selection_mode="rows")
+        return df_filtered()
 
     @output
-    @render.plot
+    @render.ui
     def chart():
         df = df_filtered()
+        if df.empty:
+            return ui.p("No data to display for the selected filters.")
+
+        # Determine X/Y stats
         if input.stat_type() == "QB Passing":
-            stat_x, stat_y = "YDS", "TD"
+            x_stat, y_stat = "YDS", "TD"
+            chart_title = "QB Passing: Yards vs Touchdowns"
         elif input.stat_type() == "RB Rushing":
-            stat_x, stat_y = "YDS", "TD"
+            x_stat, y_stat = "YDS", "TD"
+            chart_title = "RB Rushing: Yards vs Touchdowns"
         else:
-            stat_x, stat_y = "YDS", "REC"
-        chart = (
+            x_stat, y_stat = "YDS", "REC"
+            chart_title = "WR Receiving: Yards vs Receptions"
+
+        # Create Altair chart
+        alt_chart = (
             alt.Chart(df)
-            .mark_circle(size=80, opacity=0.7)
+            .mark_circle(size=100, opacity=0.7)
             .encode(
-                x=alt.X(stat_x, title=stat_x),
-                y=alt.Y(stat_y, title=stat_y),
-                color="Team:N",
-                tooltip=["Name", "Team", stat_x, stat_y]
+                x=alt.X(x_stat, title=x_stat, scale=alt.Scale(zero=False)),
+                y=alt.Y(y_stat, title=y_stat, scale=alt.Scale(zero=False)),
+                color=alt.Color("Team", legend=alt.Legend(title="Team")),
+                tooltip=["Name", "Team", x_stat, y_stat]
+            )
+            .properties(
+                title=chart_title,
+                width=700,
+                height=500
             )
             .interactive()
         )
-        return chart
+
+        return ui.tag(alt_chart)  # render inside UI
 
     @output
     @render.ui
     def comparison_ui():
-        df = df_raw()
-        if not input.player1() or not input.player2():
+        df = df_filtered()
+        p1 = input.player1()
+        p2 = input.player2()
+        if not p1 or not p2:
             return ui.p("Select two players to compare.")
-        p1 = df[df["Name"] == input.player1()].iloc[0]
-        p2 = df[df["Name"] == input.player2()].iloc[0]
-        return ui.HTML(f"""
-        <div style='padding:10px;'>
-            <h4>Comparison: {p1['Name']} ({p1['Team']}) vs {p2['Name']} ({p2['Team']})</h4>
-            <p><b>Yards:</b> {p1['YDS']} vs {p2['YDS']}<br>
-            <b>TDs:</b> {p1['TD']} vs {p2['TD']}<br>
-            <b>AVG / QBR:</b> {p1.get('AVG', p1.get('QBR',''))} vs {p2.get('AVG', p2.get('QBR',''))}</p>
-        </div>
-        """)
+        df1 = df[df["Name"] == p1]
+        df2 = df[df["Name"] == p2]
+        return ui.div(
+            ui.h4(f"Comparing {p1} vs {p2}"),
+            ui.table(pd.concat([df1, df2]))
+        )
 
+# =========================================================
+# Create App
+# =========================================================
 app = App(app_ui, server)
+
+# =========================================================
+# Optional testing
+# =========================================================
+if __name__ == "__main__":
+    print("Testing QB Passing scraper...")
+    print(scrape_espn_passing_with_selenium().head())
