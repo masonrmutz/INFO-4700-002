@@ -186,3 +186,84 @@ with ENGINE.begin() as conn:
     load_catch(conn, df_catch)
 
 print("DONE")
+
+
+
+___________________________________________________________-
+DROP DATABASE IF EXISTS Capstone;
+create database Capstone;
+use Capstone;
+
+create table Teams(
+	team_id int auto_increment Primary key,
+    abbreviation VARCHAR(10) NOT NULL UNIQUE
+) engine=InnoDB;
+create table players(
+	player_id int auto_increment primary key,
+    full_name varchar(50) not null,
+    position varchar(10),
+    current_team_id int,
+    constraint FK_players_team
+		foreign key (current_team_id) references Teams(team_id),
+	constraint uq_players_fullname unique (full_name)
+)engine=InnoDB;
+
+create table QB_player(
+    player_id int not null primary key, 
+    POS varchar(10) not null, 
+    GP int not null, 
+    CMP int not null, 
+    ATT int not null, 
+    CMP_PCT decimal(4,1) not null, 
+    YDS int not null, 
+    AVG_Y decimal(5,1) not null, 
+    YDS_G decimal (5,1), 
+    LNG int not null, 
+    TD int not null, 
+    INT_COUNT int not null, 
+    SACK int not null, 
+    SYL int not null, 
+    QBR decimal(5,1) not null, 
+    RTG decimal(4,1) not null,
+    constraint FK_qb_player foreign key (player_id)
+		references players(player_id) on delete cascade
+);
+create table Rush_player(
+	player_id int not null primary key,
+	POS varchar(5) not null, 
+    GP int not null, 
+    ATT int not null, 
+    YDS int not null, 
+    AVG_Y decimal(5,1) not null, 
+    LNG int not null, 
+    BIG int not null, 
+    TD int not null, 
+    YDS_G decimal(5,1) not null, 
+    FUM int not null, 
+	LST int not null, 
+    FD int not null,
+    constraint Fk_rush_player foreign key (player_id)
+		references players(player_id) on delete cascade
+    );
+
+create table Catch_player(
+	player_id int not null primary key,
+    GP int not null,
+    REC int not null,
+    TGTS int not null,
+    YDS int not null,
+    AVG_Y decimal(5,1) not null,
+    Yds_G decimal(5,1),
+    LNG int not null,
+    TD int not null,
+    FUM int,
+    LST int,
+    FD int,
+    YAC int,
+    DROPS int,
+    CTCH_PCT decimal(5,1),
+    constraint Fk_catch_player FOREIGN key (player_id)
+		references players(player_id) on delete cascade
+);
+
+
