@@ -1,1 +1,188 @@
-https://dev.mysql.com/downloads/file/?id=544661
+import pandas as pd
+df_QB = pd.read_csv("espn_passing.csv")
+df_rush = pd.read_csv("espn_rushing.csv")
+df_catch = pd.read_csv("espn_receiving.csv")
+
+import pandas as pd
+import numpy as np
+from sqlalchemy import create_engine, text
+
+ENGINE = create_engine(
+    "mysql+mysqlconnector://command_2:command_2@127.0.0.1:3306/Capstone",
+    pool_pre_ping=True
+)
+
+CATCH_YDS_G_COL = "YDS_G"
+
+def to_int(x):
+    if pd.isna(x): return None
+    s = str(x).replace(",", "").strip()
+    if s in ("", "nan", "None"): return None
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+def to_float(x):
+    if pd.isna(x): return None
+    s = str(x).replace(",", "").strip()
+    if s in ("", "nan", "None"): return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+def clean_numeric(df, int_cols=(), float_cols=()):
+    for c in int_cols:
+        if c in df.columns:
+            df[c] = df[c].apply(to_int)
+    for c in float_cols:
+        if c in df.columns:
+            df[c] = df[c].apply(to_float)
+    return df
+
+SQL_TEAM = text("""
+INSERT INTO Teams (abbreviation)
+VALUES (:team)
+ON DUPLICATE KEY UPDATE team_id = LAST_INSERT_ID(team_id);
+""")
+
+SQL_PLAYER = text("""
+INSERT INTO players (full_name, position, current_team_id)
+VALUES (:name, :pos, :team_id)
+ON DUPLICATE KEY UPDATE
+  player_id = LAST_INSERT_ID(player_id),
+  position = VALUES(position),
+  current_team_id = VALUES(current_team_id);
+""")
+
+SQL_QB = text("""
+INSERT INTO QB_player
+(player_id, POS, GP, CMP, ATT, CMP_PCT, YDS, AVG_Y, YDS_G, LNG, TD, INT_COUNT, SACK, SYL, QBR, RTG)
+VALUES
+(:player_id, :POS, :GP, :CMP, :ATT, :CMP_PCT, :YDS, :AVG_Y, :YDS_G, :LNG, :TD, :INT_COUNT, :SACK, :SYL, :QBR, :RTG)
+ON DUPLICATE KEY UPDATE
+  POS=VALUES(POS), GP=VALUES(GP), CMP=VALUES(CMP), ATT=VALUES(ATT), CMP_PCT=VALUES(CMP_PCT),
+  YDS=VALUES(YDS), AVG_Y=VALUES(AVG_Y), YDS_G=VALUES(YDS_G), LNG=VALUES(LNG),
+  TD=VALUES(TD), INT_COUNT=VALUES(INT_COUNT), SACK=VALUES(SACK), SYL=VALUES(SYL),
+  QBR=VALUES(QBR), RTG=VALUES(RTG);
+""")
+
+SQL_RUSH = text("""
+INSERT INTO Rush_player
+(player_id, POS, GP, ATT, YDS, AVG_Y, LNG, BIG, TD, YDS_G, FUM, LST, FD)
+VALUES
+(:player_id, :POS, :GP, :ATT, :YDS, :AVG_Y, :LNG, :BIG, :TD, :YDS_G, :FUM, :LST, :FD)
+ON DUPLICATE KEY UPDATE
+  POS=VALUES(POS), GP=VALUES(GP), ATT=VALUES(ATT), YDS=VALUES(YDS), AVG_Y=VALUES(AVG_Y),
+  LNG=VALUES(LNG), BIG=VALUES(BIG), TD=VALUES(TD), YDS_G=VALUES(YDS_G),
+  FUM=VALUES(FUM), LST=VALUES(LST), FD=VALUES(FD);
+""")
+
+SQL_CATCH = text(f"""
+INSERT INTO Catch_player
+(player_id, GP, REC, TGTS, YDS, AVG_Y, {CATCH_YDS_G_COL}, LNG, TD, FUM, LST, FD, YAC, DROPS, CTCH_PCT)
+VALUES
+(:player_id, :GP, :REC, :TGTS, :YDS, :AVG_Y, :YDS_G, :LNG, :TD, :FUM, :LST, :FD, :YAC, :DROPS, :CTCH_PCT)
+ON DUPLICATE KEY UPDATE
+  GP=VALUES(GP), REC=VALUES(REC), TGTS=VALUES(TGTS), YDS=VALUES(YDS), AVG_Y=VALUES(AVG_Y),
+  {CATCH_YDS_G_COL}=VALUES({CATCH_YDS_G_COL}), LNG=VALUES(LNG), TD=VALUES(TD), FUM=VALUES(FUM), LST=VALUES(LST),
+  FD=VALUES(FD), YAC=VALUES(YAC), DROPS=VALUES(DROPS), CTCH_PCT=VALUES(CTCH_PCT);
+""")
+
+def _last_id(conn):
+    return conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+def load_qbs(conn, df_qb: pd.DataFrame):
+    qb = df_qb.copy()
+    if "POS" in qb.columns:
+        qb = qb[qb["POS"] == "QB"].copy()
+
+    rename_map = {"CMP%": "CMP_PCT", "AVG": "AVG_Y", "YDS/G": "YDS_G", "INT": "INT_COUNT"}
+    qb.rename(columns=rename_map, inplace=True)
+
+    keep_cols = ["Name","Team","POS","GP","CMP","ATT","CMP_PCT","YDS","AVG_Y","YDS_G",
+                 "LNG","TD","INT_COUNT","SACK","SYL","QBR","RTG"]
+    qb = qb[[c for c in keep_cols if c in qb.columns]].copy()
+
+    qb = clean_numeric(
+        qb,
+        int_cols=["GP","CMP","ATT","YDS","LNG","TD","INT_COUNT","SACK","SYL"],
+        float_cols=["CMP_PCT","AVG_Y","YDS_G","QBR","RTG"]
+    )
+
+    for _, r in qb.iterrows():
+        conn.execute(SQL_TEAM, {"team": r["Team"]})
+        team_id = _last_id(conn)
+
+        conn.execute(SQL_PLAYER, {"name": r["Name"], "pos": r["POS"], "team_id": team_id})
+        player_id = _last_id(conn)
+
+        conn.execute(SQL_QB, {
+            "player_id": player_id, "POS": r["POS"], "GP": r["GP"], "CMP": r["CMP"], "ATT": r["ATT"],
+            "CMP_PCT": r["CMP_PCT"], "YDS": r["YDS"], "AVG_Y": r["AVG_Y"], "YDS_G": r["YDS_G"],
+            "LNG": r["LNG"], "TD": r["TD"], "INT_COUNT": r["INT_COUNT"], "SACK": r["SACK"],
+            "SYL": r["SYL"], "QBR": r["QBR"], "RTG": r["RTG"]
+        })
+
+def load_rush(conn, df_rush: pd.DataFrame):
+    rs = df_rush.copy()
+    rs.rename(columns={"AVG": "AVG_Y", "YDS/G": "YDS_G"}, inplace=True)
+
+    keep_cols = ["Name","Team","POS","GP","ATT","YDS","AVG_Y","LNG","BIG","TD","YDS_G","FUM","LST","FD"]
+    rs = rs[[c for c in keep_cols if c in rs.columns]].copy()
+
+    rs = clean_numeric(
+        rs,
+        int_cols=["GP","ATT","YDS","LNG","BIG","TD","FUM","LST","FD"],
+        float_cols=["AVG_Y","YDS_G"]
+    )
+
+    for _, r in rs.iterrows():
+        conn.execute(SQL_TEAM, {"team": r["Team"]})
+        team_id = _last_id(conn)
+
+        conn.execute(SQL_PLAYER, {"name": r["Name"], "pos": r.get("POS","RB"), "team_id": team_id})
+        player_id = _last_id(conn)
+
+        conn.execute(SQL_RUSH, {
+            "player_id": player_id, "POS": r.get("POS","RB"), "GP": r["GP"], "ATT": r["ATT"],
+            "YDS": r["YDS"], "AVG_Y": r["AVG_Y"], "LNG": r["LNG"], "BIG": r["BIG"], "TD": r["TD"],
+            "YDS_G": r["YDS_G"], "FUM": r["FUM"], "LST": r["LST"], "FD": r["FD"]
+        })
+
+def load_catch(conn, df_catch: pd.DataFrame):
+    rc = df_catch.copy()
+    rename_map = {"AVG": "AVG_Y", "YDS/G": "YDS_G", "DROP": "DROPS", "CTCH%": "CTCH_PCT"}
+    rc.rename(columns=rename_map, inplace=True)
+
+    keep_cols = ["Name","Team","POS","GP","REC","TGTS","YDS","AVG_Y","YDS_G","LNG",
+                 "TD","FUM","LST","FD","YAC","DROPS","CTCH_PCT"]
+    rc = rc[[c for c in keep_cols if c in rc.columns]].copy()
+
+    rc = clean_numeric(
+        rc,
+        int_cols=["GP","REC","TGTS","YDS","LNG","TD","FUM","LST","FD","YAC","DROPS"],
+        float_cols=["AVG_Y","YDS_G","CTCH_PCT"]
+    )
+
+    for _, r in rc.iterrows():
+        conn.execute(SQL_TEAM, {"team": r["Team"]})
+        team_id = _last_id(conn)
+
+        conn.execute(SQL_PLAYER, {"name": r["Name"], "pos": r.get("POS"), "team_id": team_id})
+        player_id = _last_id(conn)
+
+        conn.execute(SQL_CATCH, {
+            "player_id": player_id, "GP": r["GP"], "REC": r["REC"], "TGTS": r["TGTS"], "YDS": r["YDS"],
+            "AVG_Y": r["AVG_Y"], "YDS_G": r["YDS_G"], "LNG": r["LNG"], "TD": r["TD"], "FUM": r.get("FUM"),
+            "LST": r.get("LST"), "FD": r.get("FD"), "YAC": r.get("YAC"), "DROPS": r.get("DROPS"),
+            "CTCH_PCT": r.get("CTCH_PCT")
+        })
+
+with ENGINE.begin() as conn:
+    load_qbs(conn, df_QB)
+    load_rush(conn, df_rush)
+    load_catch(conn, df_catch)
+
+print("DONE")
