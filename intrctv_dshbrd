@@ -84,7 +84,7 @@ def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_cli
         clicks += 1
 
 # =========================================================
-# Generic ESPN Scraper Function
+# ESPN Scraper Functions
 # =========================================================
 def scrape_espn_stats(url, cache_file, desired_columns, id_str):
     if os.path.exists(cache_file):
@@ -153,9 +153,9 @@ def scrape_espn_receiving_with_selenium():
 # =========================================================
 app_ui = ui.page_navbar(
     ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
-    ui.nav_panel("Interactive Chart", ui.output_ui("chart")),  # now render as ui
-    ui.nav_panel("Player Comparison", ui.output_ui("comparison_ui")),
-    title="🏈 ESPN NFL Player Stats Dashboard",
+    ui.nav_panel("Interactive Chart", ui.output_ui("chart_ui")),
+    ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
+    title="🏈 ESPN NFL Player Stats Dashboard",  # use keyword argument
     sidebar=ui.sidebar(
         ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing", "WR Receiving"]),
         ui.input_select("team_select", "Filter by Team:", TEAMS),
@@ -198,19 +198,24 @@ def server(input, output, session):
             df = df[df["Name"].str.contains(input.player_search(), case=False)]
         return df
 
+    # -----------------------------
+    # Data Table
+    # -----------------------------
     @output
     @render.data_frame
     def player_table():
         return df_filtered()
 
+    # -----------------------------
+    # Interactive Chart
+    # -----------------------------
     @output
     @render.ui
-    def chart():
+    def chart_ui():
         df = df_filtered()
         if df.empty:
-            return ui.p("No data to display for the selected filters.")
+            return ui.p("No data to display.")
 
-        # Determine X/Y stats
         if input.stat_type() == "QB Passing":
             x_stat, y_stat = "YDS", "TD"
             chart_title = "QB Passing: Yards vs Touchdowns"
@@ -221,8 +226,7 @@ def server(input, output, session):
             x_stat, y_stat = "YDS", "REC"
             chart_title = "WR Receiving: Yards vs Receptions"
 
-        # Create Altair chart
-        alt_chart = (
+        chart_obj = (
             alt.Chart(df)
             .mark_circle(size=100, opacity=0.7)
             .encode(
@@ -231,30 +235,26 @@ def server(input, output, session):
                 color=alt.Color("Team", legend=alt.Legend(title="Team")),
                 tooltip=["Name", "Team", x_stat, y_stat]
             )
-            .properties(
-                title=chart_title,
-                width=700,
-                height=500
-            )
+            .properties(title=chart_title, width=700, height=500)
             .interactive()
         )
 
-        return ui.tag(alt_chart)  # render inside UI
+        return ui.HTML(chart_obj.to_html())
 
+    # -----------------------------
+    # Player Comparison
+    # -----------------------------
     @output
-    @render.ui
-    def comparison_ui():
+    @render.data_frame
+    def comparison_table():
         df = df_filtered()
         p1 = input.player1()
         p2 = input.player2()
         if not p1 or not p2:
-            return ui.p("Select two players to compare.")
+            return pd.DataFrame()
         df1 = df[df["Name"] == p1]
         df2 = df[df["Name"] == p2]
-        return ui.div(
-            ui.h4(f"Comparing {p1} vs {p2}"),
-            ui.table(pd.concat([df1, df2]))
-        )
+        return pd.concat([df1, df2])
 
 # =========================================================
 # Create App
