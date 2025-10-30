@@ -6,3 +6,4 @@ webdriver-manager
 shiny
 lxml
 Jinja2
+altair
