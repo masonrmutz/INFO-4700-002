@@ -1,9 +1,9 @@
-
 # Imports
 
 import os
 import time
 import pandas as pd
+import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -14,7 +14,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 from shiny import App, ui, reactive, render
 import altair as alt
-
 
 # Config / URLs
 
@@ -33,7 +32,6 @@ CACHE_FILES = {
     "RB Rushing": os.path.join(CACHE_DIR, "espn_rushing.csv"),
     "WR Receiving": os.path.join(CACHE_DIR, "espn_receiving.csv"),
 }
-
 
 # Helper functions
 
@@ -82,7 +80,6 @@ def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_cli
                 break
         prev = new
         clicks += 1
-
 
 # ESPN Scraper Functions
 
@@ -148,6 +145,39 @@ def scrape_espn_receiving_with_selenium():
     return scrape_espn_stats(URL_RECEIVING, CACHE_FILES["WR Receiving"],
         ["POS","GP","REC","TGTS","YDS","AVG","YDS/G","LNG","TD","20+","40+","FUM","LST","FD","YAC","DROP","CTCH%"], "receiving")
 
+# Sleeper Fantasy Standings Function
+
+def standings(league_id: str) -> pd.DataFrame:
+    users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users", timeout=20).json()
+    userId = {u["user_id"]: u for u in users}
+    rosters = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/rosters", timeout=20).json()
+
+    rows = []
+    for r in rosters:
+        s = r.get("settings", {}) or {}
+        owner_id = r.get("owner_id")
+        u = userId.get(owner_id, {})
+        display = u.get("display_name") or ""
+        team = (
+            (r.get("metadata", {}) or {}).get("team_name")
+            or (u.get("metadata", {}) or {}).get("team_name")
+            or display
+            or f"Team {r.get('roster_id')}"
+        )
+        pf = float(s.get("fpts", 0)) + float(s.get("fpts_decimal", 0) or 0) / (10 ** len(str(s.get("fpts_decimal", ""))))
+        pa = float(s.get("fpts_against", 0)) + float(s.get("fpts_against_decimal", 0) or 0) / (10 ** len(str(s.get("fpts_against_decimal", ""))))
+        wins, losses, ties = int(s.get("wins", 0)), int(s.get("losses", 0)), int(s.get("ties", 0))
+        gp = wins + losses + ties
+        winpct = round((wins + 0.5 * ties) / gp, 3) if gp else 0.0
+
+        rows.append({
+            "Team": team,
+            "Owner": display or "—",
+            "Wins": wins, "Losses": losses, "Ties": ties, "Win%": winpct,
+            "PF": round(pf, 2), "PA": round(pa, 2)
+        })
+
+    return pd.DataFrame(rows).sort_values(by=["Wins", "PF"], ascending=[False, False]).reset_index(drop=True)
 
 # Shiny App UI
 
@@ -155,7 +185,8 @@ app_ui = ui.page_navbar(
     ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
     ui.nav_panel("Interactive Chart", ui.output_ui("chart_ui")),
     ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
-    title="🏈 ESPN NFL Player Stats Dashboard",  # use keyword argument
+    ui.nav_panel("Fantasy League", ui.output_data_frame("fantasy_table")),
+    title="🏈 ESPN NFL Player Stats Dashboard",
     sidebar=ui.sidebar(
         ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing", "WR Receiving"]),
         ui.input_select("team_select", "Filter by Team:", TEAMS),
@@ -167,11 +198,11 @@ app_ui = ui.page_navbar(
     selected="Data Table"
 )
 
-
 # Server
 
 def server(input, output, session):
 
+    # ESPN Data
     @reactive.Calc
     @reactive.event(input.refresh, input.stat_type)
     def df_raw():
@@ -198,17 +229,12 @@ def server(input, output, session):
             df = df[df["Name"].str.contains(input.player_search(), case=False)]
         return df
 
-    
-    # Data Table
-    
+    # ESPN Outputs
     @output
     @render.data_frame
     def player_table():
         return df_filtered()
 
-    
-    # Interactive Chart
-    
     @output
     @render.ui
     def chart_ui():
@@ -241,9 +267,6 @@ def server(input, output, session):
 
         return ui.HTML(chart_obj.to_html())
 
-    
-    # Player Comparison
-    
     @output
     @render.data_frame
     def comparison_table():
@@ -256,9 +279,19 @@ def server(input, output, session):
         df2 = df[df["Name"] == p2]
         return pd.concat([df1, df2])
 
+    # Fantasy League Tab
+    @reactive.Calc
+    def df_fantasy():
+        league_id = 1180222056477925376
+        return standings(league_id)
 
+    @output
+    @render.data_frame
+    def fantasy_table():
+        return df_fantasy()
+
+# Run App
 app = App(app_ui, server)
-
 
 if __name__ == "__main__":
     print("Testing QB Passing scraper...")
