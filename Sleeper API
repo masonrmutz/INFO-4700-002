@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+import requests
+sleeperReq = requests.get("https://api.sleeper.app/v1/league/1180222056477925376/rosters").json()
+
+
+# In[2]:
+
+
+players = requests.get("https://api.sleeper.app/v1/players/nfl").json()
+import pandas as pd
+
+
+# In[3]:
+
+
+sleeperReq
+
+
+# In[4]:
+
+
+owner_ids = [r["owner_id"] for r in sleeperReq]
+print(owner_ids)
+
+
+# In[5]:
+
+
+rosters = requests.get(f"https://api.sleeper.app/v1/league/1180222056477925376/rosters").json()
+
+
+# In[6]:
+
+
+for roster in rosters:
+    player_ids = roster.get('players', [])
+    names = [f"{players[p]['first_name']} {players[p]['last_name']}" for p in player_ids if p in players]
+    owner = roster.get('owner_id')
+    print(owner, names)
+
+
+# In[7]:
+
+
+def standings(league_id: str) -> pd.DataFrame:
+    # owners (for display names + possible custom team names)
+    users = requests.get(f"https://api.sleeper.app/v1/league/1180222056477925376/users", timeout=20).json()
+    userId = {u["user_id"]: u for u in users}
+    # rosters (wins/losses/points live here)
+    rosters = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/rosters", timeout=20).json()
+
+    rows = []
+    for r in rosters:
+        s = r.get("settings", {}) or {}
+        owner_id = r.get("owner_id")
+        u = userId.get(owner_id, {})
+        display = u.get("display_name") or ""
+        # pick a nice team name: roster metadata > user metadata > display name > "Team N"
+        team = (
+            (r.get("metadata", {}) or {}).get("team_name")
+            or (u.get("metadata", {}) or {}).get("team_name")
+            or display
+            or f"Team {r.get('roster_id')}"
+        )
+
+        # points for/against can be split (e.g., fpts + fpts_decimal)
+        pf = float(s.get("fpts", 0)) + float(s.get("fpts_decimal", 0) or 0) / (10 ** len(str(s.get("fpts_decimal", ""))))
+        pa = float(s.get("fpts_against", 0)) + float(s.get("fpts_against_decimal", 0) or 0) / (10 ** len(str(s.get("fpts_against_decimal", ""))))
+
+        wins, losses, ties = int(s.get("wins", 0)), int(s.get("losses", 0)), int(s.get("ties", 0))
+        gp = wins + losses + ties
+        winpct = round((wins + 0.5 * ties) / gp, 3) if gp else 0.0
+
+        rows.append({
+            "Team": team,
+            "Owner": display or "—",
+            "Wins": wins, "Losses": losses, "Ties": ties, "Win%": winpct,
+            "PF": round(pf, 2), "PA": round(pa, 2)
+        })
+
+    return pd.DataFrame(rows).sort_values(by=["Wins", "PF"], ascending=[False, False]).reset_index(drop=True)
+
+league_id = 1180222056477925376
+df = standings(league_id)
+print(df.to_string(index=False))
+
+
+
+
