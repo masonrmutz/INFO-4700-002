@@ -1,6 +1,6 @@
-# =========================================================
+
 # Imports
-# =========================================================
+
 import os
 import time
 import pandas as pd
@@ -15,9 +15,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 from shiny import App, ui, reactive, render
 import altair as alt
 
-# =========================================================
+
 # Config / URLs
-# =========================================================
+
 URL_PASSING = "https://www.espn.com/nfl/stats/player/_/stat/passing"
 URL_RUSH = "https://www.espn.com/nfl/stats/player/_/stat/rushing"
 URL_RECEIVING = "https://www.espn.com/nfl/stats/player/_/stat/receiving"
@@ -34,9 +34,9 @@ CACHE_FILES = {
     "WR Receiving": os.path.join(CACHE_DIR, "espn_receiving.csv"),
 }
 
-# =========================================================
+
 # Helper functions
-# =========================================================
+
 def build_driver(headless=True):
     opts = Options()
     if headless:
@@ -83,9 +83,9 @@ def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_cli
         prev = new
         clicks += 1
 
-# =========================================================
+
 # ESPN Scraper Functions
-# =========================================================
+
 def scrape_espn_stats(url, cache_file, desired_columns, id_str):
     if os.path.exists(cache_file):
         return pd.read_csv(cache_file)
@@ -148,9 +148,9 @@ def scrape_espn_receiving_with_selenium():
     return scrape_espn_stats(URL_RECEIVING, CACHE_FILES["WR Receiving"],
         ["POS","GP","REC","TGTS","YDS","AVG","YDS/G","LNG","TD","20+","40+","FUM","LST","FD","YAC","DROP","CTCH%"], "receiving")
 
-# =========================================================
+
 # Shiny App UI
-# =========================================================
+
 app_ui = ui.page_navbar(
     ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
     ui.nav_panel("Interactive Chart", ui.output_ui("chart_ui")),
@@ -167,9 +167,9 @@ app_ui = ui.page_navbar(
     selected="Data Table"
 )
 
-# =========================================================
+
 # Server
-# =========================================================
+
 def server(input, output, session):
 
     @reactive.Calc
@@ -198,17 +198,17 @@ def server(input, output, session):
             df = df[df["Name"].str.contains(input.player_search(), case=False)]
         return df
 
-    # -----------------------------
+    
     # Data Table
-    # -----------------------------
+    
     @output
     @render.data_frame
     def player_table():
         return df_filtered()
 
-    # -----------------------------
+    
     # Interactive Chart
-    # -----------------------------
+    
     @output
     @render.ui
     def chart_ui():
@@ -241,9 +241,9 @@ def server(input, output, session):
 
         return ui.HTML(chart_obj.to_html())
 
-    # -----------------------------
+    
     # Player Comparison
-    # -----------------------------
+    
     @output
     @render.data_frame
     def comparison_table():
@@ -256,14 +256,10 @@ def server(input, output, session):
         df2 = df[df["Name"] == p2]
         return pd.concat([df1, df2])
 
-# =========================================================
-# Create App
-# =========================================================
+
 app = App(app_ui, server)
 
-# =========================================================
-# Optional testing
-# =========================================================
+
 if __name__ == "__main__":
     print("Testing QB Passing scraper...")
     print(scrape_espn_passing_with_selenium().head())
