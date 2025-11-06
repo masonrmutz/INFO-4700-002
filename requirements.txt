@@ -1,9 +1,0 @@
-requests
-beautifulsoup4
-pandas
-selenium
-webdriver-manager
-shiny
-lxml
-Jinja2
-altair
