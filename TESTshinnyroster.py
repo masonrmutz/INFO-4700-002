@@ -50,8 +50,10 @@ def build_driver(headless=True):
 
 def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_clicks=100):
     left_rows_css = ".Table--fixed-left tbody tr.Table__TR[data-idx]"
+
     def row_count():
         return len(table_container.find_elements(By.CSS_SELECTOR, left_rows_css))
+
     def find_show_more():
         local = table_container.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
         if local:
@@ -124,9 +126,15 @@ def scrape_espn_stats(url, cache_file, desired_columns, id_str):
                 continue
             cells = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
             vals = [c.text.strip() for c in cells]
-            stats[idx] = {h: vals[header_pos[h]] if h in header_pos and header_pos[h] < len(vals) else "" for h in desired_columns}
+            stats[idx] = {
+                h: vals[header_pos[h]] if h in header_pos and header_pos[h] < len(vals) else ""
+                for h in desired_columns
+            }
 
-        rows = [{**player_summary.get(idx, {}), **stats.get(idx, {})} for idx in sorted(set(player_summary) | set(stats), key=lambda x: int(x))]
+        rows = [
+            {**player_summary.get(idx, {}), **stats.get(idx, {})}
+            for idx in sorted(set(player_summary) | set(stats), key=lambda x: int(x))
+        ]
         df = pd.DataFrame(rows)
         df.to_csv(cache_file, index=False)
         return df
@@ -134,18 +142,66 @@ def scrape_espn_stats(url, cache_file, desired_columns, id_str):
         driver.quit()
 
 def scrape_espn_passing_with_selenium():
-    return scrape_espn_stats(URL_PASSING, CACHE_FILES["QB Passing"],
-        ["POS","GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG","TD","INT","SACK","SYL","QBR","RTG"], "passing")
+    return scrape_espn_stats(
+        URL_PASSING,
+        CACHE_FILES["QB Passing"],
+        ["POS","GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG","TD","INT","SACK","SYL","QBR","RTG"],
+        "passing"
+    )
 
 def scrape_espn_rushing_with_selenium():
-    return scrape_espn_stats(URL_RUSH, CACHE_FILES["RB Rushing"],
-        ["POS","GP","ATT","YDS","AVG","LNG","BIG","TD","YDS/G","FUM","LST","FD"], "rushing")
+    return scrape_espn_stats(
+        URL_RUSH,
+        CACHE_FILES["RB Rushing"],
+        ["POS","GP","ATT","YDS","AVG","LNG","BIG","TD","YDS/G","FUM","LST","FD"],
+        "rushing"
+    )
 
 def scrape_espn_receiving_with_selenium():
-    return scrape_espn_stats(URL_RECEIVING, CACHE_FILES["WR Receiving"],
-        ["POS","GP","REC","TGTS","YDS","AVG","YDS/G","LNG","TD","20+","40+","FUM","LST","FD","YAC","DROP","CTCH%"], "receiving")
+    return scrape_espn_stats(
+        URL_RECEIVING,
+        CACHE_FILES["WR Receiving"],
+        ["POS","GP","REC","TGTS","YDS","AVG","YDS/G","LNG","TD","20+","40+","FUM","LST","FD","YAC","DROP","CTCH%"],
+        "receiving"
+    )
 
-# Sleeper Fantasy Standings Function
+# Sleeper Fantasy Functions
+
+def sleeper_rosters_df(league_id: str) -> pd.DataFrame:
+    league = requests.get(f"https://api.sleeper.app/v1/league/{league_id}").json()
+    users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users").json()
+    rosters = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/rosters").json()
+    players = requests.get("https://api.sleeper.app/v1/players/nfl").json()
+
+    user_map = {u["user_id"]: u["display_name"] for u in users}
+
+    combined_data = []
+    for roster in rosters:
+        owner_name = user_map.get(roster.get("owner_id"), "Unknown")
+        player_ids = roster.get("players", [])
+        starter_ids = roster.get("starters", [])
+
+        starters = [
+            players[p].get("full_name", "Unknown Player")
+            for p in starter_ids
+            if p in players
+        ]
+        bench = [
+            players[p].get("full_name", "Unknown Player")
+            for p in player_ids
+            if p not in starter_ids and p in players
+        ]
+
+        combined_data.append({
+            "owner": owner_name,
+            "starters": starters,
+            "bench": bench,
+            "wins": roster.get("settings", {}).get("wins", 0),
+            "losses": roster.get("settings", {}).get("losses", 0),
+            "points": roster.get("settings", {}).get("fpts", 0),
+        })
+
+    return pd.DataFrame(combined_data)
 
 def standings(league_id: str) -> pd.DataFrame:
     users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users", timeout=20).json()
@@ -283,7 +339,7 @@ def server(input, output, session):
     @reactive.Calc
     def df_fantasy():
         league_id = 1180222056477925376
-        return standings(league_id)
+        return sleeper_rosters_df(str(league_id))
 
     @output
     @render.data_frame
