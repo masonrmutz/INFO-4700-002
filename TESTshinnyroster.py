@@ -192,16 +192,24 @@ def sleeper_rosters_df(league_id: str) -> pd.DataFrame:
             if p not in starter_ids and p in players
         ]
 
+        wins = roster.get("settings", {}).get("wins", 0)
+        losses = roster.get("settings", {}).get("losses", 0)
+        points = roster.get("settings", {}).get("fpts", 0)
+        games_played = wins + losses if (wins + losses) > 0 else 1
+        avg_points_per_game = round(points / games_played, 2)
+
         combined_data.append({
             "owner": owner_name,
             "starters": starters,
             "bench": bench,
-            "wins": roster.get("settings", {}).get("wins", 0),
-            "losses": roster.get("settings", {}).get("losses", 0),
-            "points": roster.get("settings", {}).get("fpts", 0),
+            "wins": wins,
+            "losses": losses,
+            "points": points,
+            "avg_points_per_game": avg_points_per_game
         })
 
     return pd.DataFrame(combined_data)
+
 
 def standings(league_id: str) -> pd.DataFrame:
     users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users", timeout=20).json()
