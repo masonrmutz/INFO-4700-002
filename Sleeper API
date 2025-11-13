@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+import base64  # NEW
 
 league_id = "1180222056477925376"
 
@@ -30,3 +31,61 @@ for roster in rosters:
 
 df = pd.DataFrame(combined_data)
 print(df)
+
+# Save to CSV
+df.to_csv("sleeper_league.csv", index=False)
+print("\nSaved to sleeper_league.csv")
+
+# --- GitHub upload helper (same pattern as the ESPN scripts) ---
+def upload_csv_to_github(
+    csv_path,
+    repo="masonrmutz/INFO-4700-002",
+    github_path="SLEEPERAPIcsv",
+    branch="main"
+):
+    """
+    Uploads/overwrites a file in a GitHub repo using the Contents API.
+    Uses a personal access token embedded directly in the code.
+    """
+    token = "LOOK AT THE GOOGLE DOC"
+
+    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
+        raise RuntimeError("You must set your GitHub token in the script.")
+
+    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    # Read CSV and base64-encode
+    with open(csv_path, "rb") as f:
+        content = f.read()
+    b64_content = base64.b64encode(content).decode("utf-8")
+
+    # Get current file SHA (needed for update)
+    sha = None
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    elif r.status_code != 404:
+        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
+
+    payload = {
+        "message": "Update Sleeper league data",
+        "content": b64_content,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, headers=headers, json=payload)
+    if not r.ok:
+        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
+
+    data = r.json()
+    html_url = data.get("content", {}).get("html_url", url)
+    print(f"Uploaded to GitHub: {html_url}")
+
+# actually upload
+upload_csv_to_github("sleeper_league.csv")
