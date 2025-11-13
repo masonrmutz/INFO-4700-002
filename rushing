@@ -1,5 +1,8 @@
 import time
 import pandas as pd
+import base64 
+import requests 
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -90,7 +93,7 @@ def scrape_espn_rushing_with_selenium(headless=True):
         # Click "Show More" until all rows are loaded
         click_show_more_until_done(driver, rushing_block, wait)
 
-        # --- LEFT: rank + name + team ---
+        # LEFT: rank + name + team
         player_summary = {}
         for row in rushing_block.find_elements(By.CSS_SELECTOR, ".Table--fixed-left tbody tr.Table__TR"):
             idx = row.get_attribute("data-idx")
@@ -112,7 +115,7 @@ def scrape_espn_rushing_with_selenium(headless=True):
 
             player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
 
-        # --- RIGHT: headers + stat rows ---
+        # RIGHT: headers + stat rows
         stat_headers = [th.text.strip() for th in rushing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller thead th")]
         header_positions = {h: i for i, h in enumerate(stat_headers)}
 
@@ -132,7 +135,7 @@ def scrape_espn_rushing_with_selenium(headless=True):
                 line[h] = texts[pos] if (pos is not None and pos < len(texts)) else ""
             player_stats[idx] = line
 
-        # --- MERGE + DataFrame ---
+        # MERGE + DataFrame 
         rows = []
         for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
             rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
@@ -153,5 +156,57 @@ def scrape_espn_rushing_with_selenium(headless=True):
     finally:
         driver.quit()
 
+# GitHub upload helper
+def upload_csv_to_github(
+    csv_path,
+    repo="masonrmutz/INFO-4700-002",
+    github_path="RUSHSTATScsv",
+    branch="main"
+):
+    """
+    Uploads/overwrites a file in a GitHub repo using the Contents API.
+    Uses a personal access token embedded directly in the code.
+    """
+    token = "LOOK AT THE GOOGLE DOC CAPSTONE" 
+
+    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
+        raise RuntimeError("You must set your GitHub token in the script.")
+
+    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    # Read CSV and base64-encode
+    with open(csv_path, "rb") as f:
+        content = f.read()
+    b64_content = base64.b64encode(content).decode("utf-8")
+
+    # Get current file SHA 
+    sha = None
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    elif r.status_code != 404:
+        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
+
+    payload = {
+        "message": "Update ESPN rushing stats",
+        "content": b64_content,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, headers=headers, json=payload)
+    if not r.ok:
+        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
+
+    data = r.json()
+    html_url = data.get("content", {}).get("html_url", url)
+    print(f"Uploaded to GitHub: {html_url}")
+
 if __name__ == "__main__":
-    scrape_espn_rushing_with_selenium(headless=True)
+    df = scrape_espn_rushing_with_selenium(headless=True)
+    upload_csv_to_github("espn_rushing.csv")
