@@ -1,5 +1,3 @@
-# DO NOT USE NOT UP TO DATE PLEASE DELETE 
-# DONE
 import time
 import pandas as pd
 from selenium.webdriver.common.by import By
@@ -88,8 +86,10 @@ def scrape_espn_receiving_with_selenium(headless=True):
         df_receiving = df_receiving[[c for c in order if c in df_receiving.columns]]
 
         # Save & preview
+        pd.set_option('display.max_rows', None)
+        pd.set_option('display.max_columns', None)
         df_receiving.to_csv("espn_receiving.csv", index=False)
-        print(df_receiving.head(376))
+        print(df_receiving)
         print("\nSaved to espn_receiving.csv")
 
         return df_receiving
