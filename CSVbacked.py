@@ -98,15 +98,20 @@ def server(input, output, session):
     def player_table():
         return df_filtered()
 
-    # ---- Interactive Chart ----
+       # ---- WORKING CHART (Matplotlib) ----
     @output
-    @render.ui
-    def chart_ui():
+    @render.plot
+    def stat_plot():
         df = df_filtered()
-        if df.empty:
-            return ui.p("No data to display.")
 
-        # Pick chart stats
+        if df.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "No data to display.",
+                    ha="center", va="center", fontsize=12)
+            ax.axis("off")
+            return fig
+
+        # Pick which columns to plot based on stat type
         if input.stat_type() == "QB Passing":
             x_stat, y_stat = "YDS", "TD"
             title = "QB Passing: Yards vs Touchdowns"
@@ -117,20 +122,41 @@ def server(input, output, session):
             x_stat, y_stat = "YDS", "REC"
             title = "WR Receiving: Yards vs Receptions"
 
-        chart = (
-            alt.Chart(df)
-            .mark_circle(size=100, opacity=0.7)
-            .encode(
-                x=alt.X(x_stat, title=x_stat),
-                y=alt.Y(y_stat, title=y_stat),
-                color=alt.Color("Team", legend=alt.Legend(title="Team")),
-                tooltip=["Name", "Team", x_stat, y_stat]
+        # Safety: only draw if those columns exist
+        if x_stat not in df.columns or y_stat not in df.columns:
+            fig, ax = plt.subplots()
+            ax.text(
+                0.5, 0.5,
+                f"Columns {x_stat} and/or {y_stat} not found in data.",
+                ha="center", va="center", fontsize=10
             )
-            .properties(width=700, height=500, title=title)
-            .interactive()
-        )
+            ax.axis("off")
+            return fig
 
-        return ui.HTML(chart.to_html())
+        fig, ax = plt.subplots()
+        ax.scatter(df[x_stat], df[y_stat])
+        ax.set_xlabel(x_stat)
+        ax.set_ylabel(y_stat)
+        ax.set_title(title)
+
+        # Optionally label a few points (top 5 by y_stat)
+        try:
+            top = df.sort_values(by=y_stat, ascending=False).head(5)
+            if "Name" in top.columns:
+                for _, row in top.iterrows():
+                    ax.annotate(
+                        row["Name"],
+                        (row[x_stat], row[y_stat]),
+                        textcoords="offset points",
+                        xytext=(5, 5),
+                        fontsize=8
+                    )
+        except Exception:
+            pass
+
+        fig.tight_layout()
+        return fig
+
 
     # ---- Player Comparison Table ----
     @output
