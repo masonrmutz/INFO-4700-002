@@ -1,6 +1,5 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import altair as alt  # not used yet, but fine to keep
 from shiny import App, ui, render, reactive
 
 # -------------------------
@@ -11,36 +10,22 @@ RUSH_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/RUSH
 RECV_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/CATCHSTATScsv"
 FANTASY_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/SLEEPERAPIcsv"
 
-# Load CSVs once
-CSV_DATA = {
-    "QB Passing": pd.read_csv(QB_URL),
-    "RB Rushing": pd.read_csv(RUSH_URL),
-    "WR Receiving": pd.read_csv(RECV_URL),
+CSV_URLS = {
+    "QB Passing": QB_URL,
+    "RB Rushing": RUSH_URL,
+    "WR Receiving": RECV_URL,
 }
-FANTASY_DATA = pd.read_csv(FANTASY_URL)
-
-# -------------------------
-# TEAMS LIST
-# -------------------------
-TEAMS = ["All"] + sorted([
-    "BUF", "MIA", "NYJ", "NE",
-    "BAL", "CIN", "PIT", "CLE",
-    "TEN", "IND", "JAX", "HOU",
-    "KC", "LAC", "LV", "DEN",
-    "PHI", "DAL", "NYG", "WAS",
-    "GB", "MIN", "DET", "CHI",
-    "TB", "NO", "ATL", "CAR",
-    "SF", "SEA", "LAR", "ARI",
-])
 
 # -------------------------
 # FANTASY POINTS HELPER
 # -------------------------
 def add_fantasy_points(df: pd.DataFrame, stat_type: str) -> pd.DataFrame:
-    # Adds FantasyPts and FantasyPtsPerGame to the dataframe
-    # Scoring:
-    #   QB: 1 pt / 25 pass yards, 4 pts / pass TD
-    #   RB/WR: 1 pt / 10 yards, 6 pts / TD, 1 pt / reception (PPR)
+    """
+    Adds FantasyPts and FantasyPtsPerGame to the dataframe.
+    Scoring:
+      - QB Passing: 1 pt per 25 pass yards, 4 pts per pass TD
+      - RB/WR: 1 pt per 10 yards, 6 pts per TD, 1 pt per reception (PPR)
+    """
     df = df.copy()
 
     if stat_type == "QB Passing":
@@ -68,6 +53,22 @@ def add_fantasy_points(df: pd.DataFrame, stat_type: str) -> pd.DataFrame:
 
     return df
 
+
+# -------------------------
+# TEAMS LIST
+# -------------------------
+TEAMS = ["All"] + sorted([
+    "BUF", "MIA", "NYJ", "NE",
+    "BAL", "CIN", "PIT", "CLE",
+    "TEN", "IND", "JAX", "HOU",
+    "KC", "LAC", "LV", "DEN",
+    "PHI", "DAL", "NYG", "WAS",
+    "GB", "MIN", "DET", "CHI",
+    "TB", "NO", "ATL", "CAR",
+    "SF", "SEA", "LAR", "ARI",
+])
+
+
 # -------------------------
 # UI
 # -------------------------
@@ -88,24 +89,39 @@ app_ui = ui.page_navbar(
     selected="Data Table",
 )
 
+
 # -------------------------
 # Server
 # -------------------------
 def server(input, output, session):
 
-    # ---- MAIN DATAFRAME (AUTO-SWITCHES BASED ON STAT TYPE) ----
+    # ---- Load main stats CSV based on stat_type ----
     @reactive.Calc
-    @reactive.event(input.refresh, input.stat_type)
     def df_raw():
-        base = CSV_DATA[input.stat_type()].copy()
-        base = add_fantasy_points(base, input.stat_type())
-        return base
+        # make reactive on these
+        input.stat_type()
+        input.refresh()
+
+        stat_type = input.stat_type()
+        url = CSV_URLS.get(stat_type)
+
+        try:
+            df = pd.read_csv(url)
+        except Exception as e:
+            # If loading fails, return a tiny error dataframe instead of crashing
+            return pd.DataFrame({"Error": [f"Failed to load {stat_type} data: {e}"]})
+
+        df = add_fantasy_points(df, stat_type)
+        return df
 
     # ---- Populate Player Dropdowns ----
     @reactive.effect
     def _populate_players():
         df = df_raw()
-        players = sorted(df["Name"].dropna().unique()) if "Name" in df.columns else []
+        if "Name" in df.columns:
+            players = sorted(df["Name"].dropna().unique())
+        else:
+            players = []
         ui.update_select("player1", choices=players)
         ui.update_select("player2", choices=players)
 
@@ -113,6 +129,10 @@ def server(input, output, session):
     @reactive.Calc
     def df_filtered():
         df = df_raw().copy()
+
+        # If we only have an Error column, just return it as-is
+        if list(df.columns) == ["Error"]:
+            return df
 
         # Filter by team
         if input.team_select() != "All" and "Team" in df.columns:
@@ -136,6 +156,14 @@ def server(input, output, session):
     def stat_plot():
         df = df_filtered()
 
+        # If error dataframe, show error text instead of crashing
+        if list(df.columns) == ["Error"]:
+            fig, ax = plt.subplots()
+            msg = df["Error"].iloc[0]
+            ax.text(0.5, 0.5, msg, ha="center", va="center", fontsize=10, wrap=True)
+            ax.axis("off")
+            return fig
+
         if df.empty:
             fig, ax = plt.subplots()
             ax.text(0.5, 0.5, "No data to display.",
@@ -144,10 +172,11 @@ def server(input, output, session):
             return fig
 
         # Pick which columns to plot based on stat type
-        if input.stat_type() == "QB Passing":
+        stat_type = input.stat_type()
+        if stat_type == "QB Passing":
             x_stat, y_stat = "YDS", "TD"
             title = "QB Passing: Yards vs Touchdowns"
-        elif input.stat_type() == "RB Rushing":
+        elif stat_type == "RB Rushing":
             x_stat, y_stat = "YDS", "TD"
             title = "RB Rushing: Yards vs Touchdowns"
         else:
@@ -194,10 +223,15 @@ def server(input, output, session):
     @render.data_frame
     def comparison_table():
         df = df_filtered()
+
+        # If error dataframe, just return it
+        if list(df.columns) == ["Error"]:
+            return df
+
         p1 = input.player1()
         p2 = input.player2()
 
-        if not p1 or not p2:
+        if not p1 or not p2 or "Name" not in df.columns:
             return pd.DataFrame()
 
         return pd.concat([df[df["Name"] == p1], df[df["Name"] == p2]])
@@ -205,12 +239,16 @@ def server(input, output, session):
     # ---- Fantasy CSV Table (SLEEPER) ----
     @reactive.Calc
     def df_fantasy():
-        return FANTASY_DATA.copy()
+        try:
+            return pd.read_csv(FANTASY_URL)
+        except Exception as e:
+            return pd.DataFrame({"Error": [f"Failed to load Sleeper data: {e}"]})
 
     @output
     @render.data_frame
     def fantasy_table():
         return df_fantasy()
+
 
 # -------------------------
 # Create App
