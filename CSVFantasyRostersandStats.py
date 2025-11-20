@@ -1,8 +1,8 @@
 import pandas as pd
-import altair as alt   # still installed; used if you want later
-from shiny import App, ui, render, reactive
 import matplotlib.pyplot as plt
-import ast  # for parsing list strings from CSV
+import ast
+import mplcursors  # For hover tooltips
+from shiny import App, ui, render, reactive
 
 # -------------------------
 # RAW GITHUB CSV URLs
@@ -22,64 +22,38 @@ CSV_DATA = {
 }
 
 # -------------------------
-# LOAD FANTASY CSV (RAW)
+# LOAD FANTASY CSV
 # -------------------------
 FANTASY_RAW = pd.read_csv(FANTASY_URL)
 
-
 # -------------------------
-# HELPER: build OwnerLabel from row
+# HELPER FUNCTIONS
 # -------------------------
 def get_owner_label(row):
     return (
-        row.get("owner", None)
-        or row.get("display_name", None)
-        or row.get("Owner", None)
-        or row.get("team_name", None)
-        or row.get("team", None)
+        row.get("owner") or row.get("display_name") or row.get("Owner") or
+        row.get("team_name") or row.get("team")
     )
 
-
-# -------------------------
-# HELPER: expand fantasy data to one row per player
-# -------------------------
 def expand_fantasy(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Turn Sleeper-style fantasy CSV into long format:
-    one row per player with 'player' + 'slot' (Starter/Bench).
-
-    Assumes the CSV has:
-      - 'starters' column: list of starter IDs/names
-      - 'players' column: list of all rostered players
-      - optionally 'bench' column: list of bench players
-    """
     df = df.copy()
-
-    # Parse list-like strings into actual Python lists
     for col in ["starters", "players", "bench"]:
         if col in df.columns:
             df[col] = df[col].apply(
-                lambda x: ast.literal_eval(x)
-                if isinstance(x, str) and x.startswith("[")
-                else x
+                lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("[") else x
             )
 
     rows = []
-
     for _, row in df.iterrows():
         owner = get_owner_label(row)
-
         starters = row.get("starters", []) or []
         all_players = row.get("players", []) or []
         bench_from_col = row.get("bench", None)
-
-        # If no explicit bench column, define bench = all_players - starters
         if bench_from_col is not None and isinstance(bench_from_col, list):
             bench = bench_from_col
         else:
             bench = [p for p in all_players if p not in starters]
 
-        # Starter rows
         for p in starters:
             r = row.to_dict()
             r["OwnerLabel"] = owner
@@ -87,7 +61,6 @@ def expand_fantasy(df: pd.DataFrame) -> pd.DataFrame:
             r["slot"] = "Starter"
             rows.append(r)
 
-        # Bench rows
         for p in bench:
             r = row.to_dict()
             r["OwnerLabel"] = owner
@@ -99,74 +72,50 @@ def expand_fantasy(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     out = pd.DataFrame(rows)
-
-    # Pick nice columns to show for rosters
-    keep_cols = [
-        c for c in [
-            "OwnerLabel", "player", "slot",
-            "wins", "losses", "points_for", "points_against",
-            "streak", "seed"
-        ]
-        if c in out.columns
-    ]
+    keep_cols = [c for c in ["OwnerLabel", "player", "slot", "wins", "losses", "points_for", "points_against", "streak", "seed"] if c in out.columns]
     base_cols = [c for c in ["OwnerLabel", "player", "slot"] if c in out.columns]
-    keep_cols = list(dict.fromkeys(base_cols + keep_cols))  # preserve order
+    keep_cols = list(dict.fromkeys(base_cols + keep_cols))
 
-    if keep_cols:
-        return out[keep_cols]
-    return out
+    return out[keep_cols] if keep_cols else out
 
+def fantasy_rosters_pivot(df):
+    owners = df.groupby("OwnerLabel")
+    rows = []
+    for owner, g in owners:
+        starters = g[g["slot"] == "Starter"]["player"].tolist()
+        bench = g[g["slot"] == "Bench"]["player"].tolist()
+        rows.append({
+            "Owner": owner,
+            "Starters": ", ".join(starters),
+            "Bench": ", ".join(bench)
+        })
+    return pd.DataFrame(rows)
 
 # -------------------------
-# BUILD FANTASY STANDINGS + ROSTERS
+# BUILD FANTASY DATA
 # -------------------------
-
-# Standings: one row per team/owner
 FANTASY_STANDINGS = FANTASY_RAW.copy()
 FANTASY_STANDINGS["OwnerLabel"] = FANTASY_STANDINGS.apply(get_owner_label, axis=1)
-
-# Keep only useful standings columns (adjust as needed)
-standings_cols = [
-    c for c in [
-        "OwnerLabel",
-        "wins", "losses", "ties",
-        "points_for", "points_against",
-        "streak", "seed"
-    ]
-    if c in FANTASY_STANDINGS.columns
-]
+standings_cols = [c for c in ["OwnerLabel","wins","losses","ties","points_for","points_against","streak","seed"] if c in FANTASY_STANDINGS.columns]
 if standings_cols:
     FANTASY_STANDINGS = FANTASY_STANDINGS[standings_cols]
-
-# Sort standings by wins then points_for (if those exist)
 if "wins" in FANTASY_STANDINGS.columns:
     sort_cols = ["wins"]
     ascending = [False]
     if "points_for" in FANTASY_STANDINGS.columns:
         sort_cols.append("points_for")
         ascending.append(False)
-    FANTASY_STANDINGS = FANTASY_STANDINGS.sort_values(
-        by=sort_cols, ascending=ascending
-    )
-
-# Rosters: one row per player
+    FANTASY_STANDINGS = FANTASY_STANDINGS.sort_values(by=sort_cols, ascending=ascending)
 FANTASY_ROSTERS = expand_fantasy(FANTASY_RAW)
-
 
 # -------------------------
 # TEAMS LIST
 # -------------------------
 TEAMS = ["All"] + sorted([
-    "BUF", "MIA", "NYJ", "NE",
-    "BAL", "CIN", "PIT", "CLE",
-    "TEN", "IND", "JAX", "HOU",
-    "KC", "LAC", "LV", "DEN",
-    "PHI", "DAL", "NYG", "WAS",
-    "GB", "MIN", "DET", "CHI",
-    "TB", "NO", "ATL", "CAR",
-    "SF", "SEA", "LAR", "ARI"
+    "BUF","MIA","NYJ","NE","BAL","CIN","PIT","CLE","TEN","IND","JAX","HOU",
+    "KC","LAC","LV","DEN","PHI","DAL","NYG","WAS","GB","MIN","DET","CHI",
+    "TB","NO","ATL","CAR","SF","SEA","LAR","ARI"
 ])
-
 
 # -------------------------
 # UI
@@ -175,16 +124,11 @@ app_ui = ui.page_navbar(
     ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
     ui.nav_panel("Interactive Chart", ui.output_plot("stat_plot")),
     ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
-
-    # NEW: separate fantasy tabs
     ui.nav_panel("Fantasy Standings", ui.output_data_frame("fantasy_standings_table")),
     ui.nav_panel("Fantasy Rosters", ui.output_data_frame("fantasy_rosters_table")),
-
     title="🏈 ESPN NFL Player Stats Dashboard",
-
     sidebar=ui.sidebar(
-        ui.input_select("stat_type", "Select Stat Type:",
-                        ["QB Passing", "RB Rushing", "WR Receiving"]),
+        ui.input_select("stat_type", "Select Stat Type:", ["QB Passing","RB Rushing","WR Receiving"]),
         ui.input_select("team_select", "Filter by Team:", TEAMS),
         ui.input_text("player_search", "Search Player:"),
         ui.input_select("player1", "Compare Player 1:", []),
@@ -194,19 +138,16 @@ app_ui = ui.page_navbar(
     selected="Data Table"
 )
 
-
 # -------------------------
 # SERVER
 # -------------------------
 def server(input, output, session):
 
-    # ---- MAIN DATAFRAME (AUTO-SWITCHES BASED ON STAT TYPE) ----
     @reactive.Calc
     @reactive.event(input.refresh, input.stat_type)
     def df_raw():
         return CSV_DATA[input.stat_type()].copy()
 
-    # ---- Populate Player Dropdowns ----
     @reactive.effect
     def _populate_players():
         df = df_raw()
@@ -214,79 +155,67 @@ def server(input, output, session):
         ui.update_select("player1", choices=players)
         ui.update_select("player2", choices=players)
 
-    # ---- Filters (Team + Player Search) ----
     @reactive.Calc
     def df_filtered():
         df = df_raw().copy()
-
-        # Filter by NFL team
         if input.team_select() != "All" and "Team" in df:
             df = df[df["Team"] == input.team_select()]
-
-        # Filter by player name search
         if input.player_search() and "Name" in df:
             df = df[df["Name"].str.contains(input.player_search(), case=False)]
-
+        # Remove commas in numeric columns to prevent plotting issues
+        for col in ["YDS","TD","REC"]:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace(",", "").astype(float)
         return df
 
-    # ---- Data Table Output ----
     @output
     @render.data_frame
     def player_table():
         return df_filtered()
 
-    # ---- WORKING CHART (Matplotlib) ----
+    # ---- WORKING CHART WITH HOVER (Matplotlib + mplcursors) ----
     @output
     @render.plot
     def stat_plot():
         df = df_filtered()
-
         if df.empty:
             fig, ax = plt.subplots()
-            ax.text(0.5, 0.5, "No data to display.",
-                    ha="center", va="center", fontsize=12)
+            ax.text(0.5, 0.5, "No data to display.", ha="center", va="center", fontsize=12)
             ax.axis("off")
             return fig
 
-        # Which columns to plot
         if input.stat_type() == "QB Passing":
-            x_stat, y_stat = "YDS", "TD"
+            x_stat, y_stat = "YDS","TD"
             title = "QB Passing: Yards vs Touchdowns"
         elif input.stat_type() == "RB Rushing":
-            x_stat, y_stat = "YDS", "TD"
+            x_stat, y_stat = "YDS","TD"
             title = "RB Rushing: Yards vs Touchdowns"
         else:
-            x_stat, y_stat = "YDS", "REC"
+            x_stat, y_stat = "YDS","REC"
             title = "WR Receiving: Yards vs Receptions"
 
-        if x_stat not in df.columns or y_stat not in df.columns:
-            fig, ax = plt.subplots()
-            ax.text(
-                0.5, 0.5,
-                f"Columns {x_stat} and/or {y_stat} not found in data.",
-                ha="center", va="center", fontsize=10
-            )
-            ax.axis("off")
-            return fig
-
         fig, ax = plt.subplots()
-        ax.scatter(df[x_stat], df[y_stat])
+        scatter = ax.scatter(df[x_stat], df[y_stat], picker=True)  # enable hover picking
         ax.set_xlabel(x_stat)
         ax.set_ylabel(y_stat)
         ax.set_title(title)
 
-        # Label a few top players
+        # Axes
+        ax.set_xlim(0, 5000)
+        ax.set_xticks(range(0, 5001, 500))
+        ax.set_ylim(0, 50)
+        ax.set_yticks(range(0, 51, 10))
+
+        # Hover tooltip for player names
+        cursor = mplcursors.cursor(scatter, hover=True)
+        cursor.connect("add", lambda sel: sel.annotation.set_text(df.iloc[sel.target.index]["Name"]))
+
+        # Label top 5 players visually
         try:
             top = df.sort_values(by=y_stat, ascending=False).head(5)
             if "Name" in top.columns:
                 for _, row in top.iterrows():
-                    ax.annotate(
-                        row["Name"],
-                        (row[x_stat], row[y_stat]),
-                        textcoords="offset points",
-                        xytext=(5, 5),
-                        fontsize=8
-                    )
+                    ax.annotate(row["Name"], (row[x_stat], row[y_stat]), textcoords="offset points", xytext=(5,5), fontsize=8)
         except Exception:
             pass
 
@@ -300,21 +229,16 @@ def server(input, output, session):
         df = df_filtered()
         p1 = input.player1()
         p2 = input.player2()
-
         if not p1 or not p2:
             return pd.DataFrame()
+        return pd.concat([df[df["Name"]==p1], df[df["Name"]==p2]])
 
-        return pd.concat([df[df["Name"] == p1], df[df["Name"] == p2]])
-
-    # ---- Fantasy Standings (owner-level) ----
+    # ---- Fantasy Standings ----
     @reactive.Calc
     def df_fantasy_standings():
         df = FANTASY_STANDINGS.copy()
-
-        # Let the same player_search box also filter by owner name
         if input.player_search() and "OwnerLabel" in df.columns:
             df = df[df["OwnerLabel"].str.contains(input.player_search(), case=False)]
-
         return df
 
     @output
@@ -322,24 +246,20 @@ def server(input, output, session):
     def fantasy_standings_table():
         return df_fantasy_standings()
 
-    # ---- Fantasy Rosters (player-level, starters/bench) ----
+    # ---- Fantasy Rosters ----
     @reactive.Calc
     def df_fantasy_rosters():
         df = FANTASY_ROSTERS.copy()
-
-        # Filter by player name with the same player_search box
         if input.player_search() and "player" in df.columns:
             df = df[df["player"].str.contains(input.player_search(), case=False)]
-
-        return df
+        return fantasy_rosters_pivot(df)
 
     @output
     @render.data_frame
     def fantasy_rosters_table():
         return df_fantasy_rosters()
 
-
 # -------------------------
-# Create App
+# CREATE APP
 # -------------------------
 app = App(app_ui, server)
