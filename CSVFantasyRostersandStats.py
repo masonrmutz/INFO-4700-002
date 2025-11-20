@@ -202,7 +202,7 @@ def server(input, output, session):
                 + pass_td * 4.0
                 + rush_yds / 10.0
                 + rush_td * 6.0
-            )
+            ).round(2)
 
         # --- RB SCORING ---
         elif input.stat_type() == "RB Rushing":
@@ -219,7 +219,7 @@ def server(input, output, session):
             df["FantasyPoints"] = (
                 rush_rec_yds / 10.0
                 + rush_rec_td * 6.0
-            )
+            ).round(2)
 
         # --- WR SCORING ---
         else:  # "WR Receiving"
@@ -234,7 +234,7 @@ def server(input, output, session):
                 rec_yds / 10.0
                 + rec_td * 6.0
                 + recs * 1.0
-            )
+            ).round(2)
 
         return df
     @output
