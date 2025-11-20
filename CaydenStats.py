@@ -72,7 +72,13 @@ def expand_fantasy(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     out = pd.DataFrame(rows)
-    keep_cols = [c for c in ["OwnerLabel", "player", "slot", "wins", "losses", "points_for", "points_against", "streak", "seed"] if c in out.columns]
+    keep_cols = [
+        c for c in [
+            "OwnerLabel", "player", "slot",
+            "wins", "losses", "points_for",
+            "points_against", "streak", "seed"
+        ] if c in out.columns
+    ]
     base_cols = [c for c in ["OwnerLabel", "player", "slot"] if c in out.columns]
     keep_cols = list(dict.fromkeys(base_cols + keep_cols))
 
@@ -91,12 +97,78 @@ def fantasy_rosters_pivot(df):
         })
     return pd.DataFrame(rows)
 
+# Helper: compute fantasy points for a raw stats DataFrame (for combined table)
+def add_fantasy_points(df: pd.DataFrame, stat_type: str) -> pd.DataFrame:
+    df = df.copy()
+
+    # Clean numeric-like columns
+    numeric_cols = ["YDS", "TD", "REC", "RushYds", "RushTD", "RecYds", "RecTD"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.replace(",", "", regex=False)
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    def num_col(name, default=0.0):
+        if name in df.columns:
+            return pd.to_numeric(df[name], errors="coerce").fillna(0.0)
+        return pd.Series(default, index=df.index, dtype=float)
+
+    df["FantasyPoints"] = 0.0
+
+    # --- QB SCORING ---
+    if stat_type == "QB Passing":
+        pass_yds = num_col("YDS")
+        pass_td = num_col("TD")
+
+        rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
+        rush_td = num_col("RushTD") if "RushTD" in df.columns else num_col("RUSH_TD")
+
+        df["FantasyPoints"] = (
+            pass_yds / 25.0
+            + pass_td * 4.0
+            + rush_yds / 10.0
+            + rush_td * 6.0
+        ).round(2)
+
+    # --- RB SCORING ---
+    elif stat_type == "RB Rushing":
+        rush_rec_yds = num_col("YDS") + num_col("RecYds")
+        rush_rec_td = num_col("TD") + num_col("RecTD")
+
+        df["FantasyPoints"] = (
+            rush_rec_yds / 10.0
+            + rush_rec_td * 6.0
+        ).round(2)
+
+    # --- WR SCORING ---
+    elif stat_type == "WR Receiving":
+        rec_yds = num_col("YDS")
+        rec_td = num_col("TD")
+        recs = num_col("REC")
+
+        df["FantasyPoints"] = (
+            rec_yds / 10.0
+            + rec_td * 6.0
+            + recs * 1.0
+        ).round(2)
+
+    return df
+
 # -------------------------
 # BUILD FANTASY DATA
 # -------------------------
 FANTASY_STANDINGS = FANTASY_RAW.copy()
 FANTASY_STANDINGS["OwnerLabel"] = FANTASY_STANDINGS.apply(get_owner_label, axis=1)
-standings_cols = [c for c in ["OwnerLabel","wins","losses","ties","points_for","points_against","streak","seed"] if c in FANTASY_STANDINGS.columns]
+standings_cols = [
+    c for c in [
+        "OwnerLabel", "wins", "losses", "ties",
+        "points_for", "points_against", "streak", "seed"
+    ] if c in FANTASY_STANDINGS.columns
+]
 if standings_cols:
     FANTASY_STANDINGS = FANTASY_STANDINGS[standings_cols]
 if "wins" in FANTASY_STANDINGS.columns:
@@ -106,15 +178,16 @@ if "wins" in FANTASY_STANDINGS.columns:
         sort_cols.append("points_for")
         ascending.append(False)
     FANTASY_STANDINGS = FANTASY_STANDINGS.sort_values(by=sort_cols, ascending=ascending)
+
 FANTASY_ROSTERS = expand_fantasy(FANTASY_RAW)
 
 # -------------------------
 # TEAMS LIST
 # -------------------------
 TEAMS = ["All"] + sorted([
-    "BUF","MIA","NYJ","NE","BAL","CIN","PIT","CLE","TEN","IND","JAX","HOU",
-    "KC","LAC","LV","DEN","PHI","DAL","NYG","WAS","GB","MIN","DET","CHI",
-    "TB","NO","ATL","CAR","SF","SEA","LAR","ARI"
+    "BUF", "MIA", "NYJ", "NE", "BAL", "CIN", "PIT", "CLE", "TEN", "IND", "JAX", "HOU",
+    "KC", "LAC", "LV", "DEN", "PHI", "DAL", "NYG", "WAS", "GB", "MIN", "DET", "CHI",
+    "TB", "NO", "ATL", "CAR", "SF", "SEA", "LAR", "ARI"
 ])
 
 # -------------------------
@@ -126,9 +199,10 @@ app_ui = ui.page_navbar(
     ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
     ui.nav_panel("Fantasy Standings", ui.output_data_frame("fantasy_standings_table")),
     ui.nav_panel("Fantasy Rosters", ui.output_data_frame("fantasy_rosters_table")),
+    ui.nav_panel("Combined Fantasy Points", ui.output_data_frame("combined_fantasy_table")),  # NEW PAGE
     title="🏈 ESPN NFL Player Stats Dashboard",
     sidebar=ui.sidebar(
-        ui.input_select("stat_type", "Select Stat Type:", ["QB Passing","RB Rushing","WR Receiving"]),
+        ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing", "WR Receiving"]),
         ui.input_select("team_select", "Filter by Team:", TEAMS),
         ui.input_text("player_search", "Search Player:"),
         ui.input_select("player1", "Compare Player 1:", []),
@@ -173,8 +247,8 @@ def server(input, output, session):
                     df[col]
                     .astype(str)
                     .str.replace(",", "", regex=False)
-                    .astype(float)
                 )
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
         # Helper to safely pull numeric series or 0 if column missing
         def num_col(name, default=0.0):
@@ -187,39 +261,32 @@ def server(input, output, session):
 
         # --- QB SCORING ---
         if input.stat_type() == "QB Passing":
-            # Assume:
-            #   YDS = passing yards
-            #   TD  = passing TD
+            # YDS = passing yards, TD = passing TD
             pass_yds = num_col("YDS")
-            pass_td  = num_col("TD")
+            pass_td = num_col("TD")
 
-            # Try to pick up rushing stats if present; otherwise 0
+            # Optional rushing stats if present
             rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
-            rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
+            rush_td = num_col("RushTD") if "RushTD" in df.columns else num_col("RUSH_TD")
 
             df["FantasyPoints"] = (
                 pass_yds / 25.0
                 + pass_td * 4.0
                 + rush_yds / 10.0
                 + rush_td * 6.0
-            )
+            ).round(2)
 
         # --- RB SCORING ---
         elif input.stat_type() == "RB Rushing":
             # 1 pt / 10 rushing or receiving yards
             # 6 pts / rushing or receiving TD
-            # If your RB CSV only has YDS and TD, this covers both.
-            rush_rec_yds = num_col("YDS")
-            rush_rec_td  = num_col("TD")
-
-            # If you have separate receiving cols, you can add:
-            rush_rec_yds += num_col("RecYds")
-            rush_rec_td  += num_col("RecTD")
+            rush_rec_yds = num_col("YDS") + num_col("RecYds")
+            rush_rec_td = num_col("TD") + num_col("RecTD")
 
             df["FantasyPoints"] = (
                 rush_rec_yds / 10.0
                 + rush_rec_td * 6.0
-            )
+            ).round(2)
 
         # --- WR SCORING ---
         else:  # "WR Receiving"
@@ -227,22 +294,39 @@ def server(input, output, session):
             # 6 pts / receiving TD
             # 1 pt / reception (PPR)
             rec_yds = num_col("YDS")      # receiving yards
-            rec_td  = num_col("TD")       # receiving TD
-            recs    = num_col("REC")      # receptions
+            rec_td = num_col("TD")        # receiving TD
+            recs = num_col("REC")         # receptions
 
             df["FantasyPoints"] = (
                 rec_yds / 10.0
                 + rec_td * 6.0
                 + recs * 1.0
-            )
+            ).round(2)
+
+        # --- POINTS PER GAME (PPG) ---
+        games_col = None
+        for candidate in ["G", "GP", "Games"]:
+            if candidate in df.columns:
+                games_col = candidate
+                break
+
+        if games_col:
+            games_played = pd.to_numeric(df[games_col], errors="coerce")
+            games_played = games_played.replace(0, pd.NA)
+            df["GamesPlayed"] = games_played
+            df["FantasyPPG"] = (df["FantasyPoints"] / games_played).round(2)
+        else:
+            df["GamesPlayed"] = pd.NA
+            df["FantasyPPG"] = pd.NA
 
         return df
-
 
     @output
     @render.data_frame
     def player_table():
-        return df_filtered()
+        # If you *don't* want to show FantasyPoints/PPG here, drop them from columns
+        df = df_filtered().copy()
+        return df
 
     # ---- WORKING CHART WITH HOVER (Matplotlib + mplcursors) ----
     @output
@@ -256,13 +340,13 @@ def server(input, output, session):
             return fig
 
         if input.stat_type() == "QB Passing":
-            x_stat, y_stat = "YDS","TD"
+            x_stat, y_stat = "YDS", "TD"
             title = "QB Passing: Yards vs Touchdowns"
         elif input.stat_type() == "RB Rushing":
-            x_stat, y_stat = "YDS","TD"
+            x_stat, y_stat = "YDS", "TD"
             title = "RB Rushing: Yards vs Touchdowns"
         else:
-            x_stat, y_stat = "YDS","REC"
+            x_stat, y_stat = "YDS", "REC"
             title = "WR Receiving: Yards vs Receptions"
 
         fig, ax = plt.subplots()
@@ -286,7 +370,13 @@ def server(input, output, session):
             top = df.sort_values(by=y_stat, ascending=False).head(5)
             if "Name" in top.columns:
                 for _, row in top.iterrows():
-                    ax.annotate(row["Name"], (row[x_stat], row[y_stat]), textcoords="offset points", xytext=(5,5), fontsize=8)
+                    ax.annotate(
+                        row["Name"],
+                        (row[x_stat], row[y_stat]),
+                        textcoords="offset points",
+                        xytext=(5, 5),
+                        fontsize=8
+                    )
         except Exception:
             pass
 
@@ -302,7 +392,7 @@ def server(input, output, session):
         p2 = input.player2()
         if not p1 or not p2:
             return pd.DataFrame()
-        return pd.concat([df[df["Name"]==p1], df[df["Name"]==p2]])
+        return pd.concat([df[df["Name"] == p1], df[df["Name"] == p2]])
 
     # ---- Fantasy Standings ----
     @reactive.Calc
@@ -330,7 +420,45 @@ def server(input, output, session):
     def fantasy_rosters_table():
         return df_fantasy_rosters()
 
+    # ---- Combined Fantasy Points across QB/RB/WR ----
+    @reactive.Calc
+    def df_combined_fantasy():
+        frames = []
+
+        for stat_type, base_df in CSV_DATA.items():
+            df = add_fantasy_points(base_df, stat_type)
+
+            # Require at least Name, Team, FantasyPoints
+            if not {"Name", "Team", "FantasyPoints"}.issubset(df.columns):
+                continue
+
+            small = df[["Name", "Team", "FantasyPoints"]].copy()
+            frames.append(small)
+
+        if not frames:
+            return pd.DataFrame()
+
+        all_df = pd.concat(frames, ignore_index=True)
+
+        # Group so each player shows up once with combined fantasy points
+        combined = (
+            all_df.groupby(["Name", "Team"], as_index=False)["FantasyPoints"]
+                  .sum()
+        )
+        combined["FantasyPoints"] = combined["FantasyPoints"].round(2)
+
+        # Optional: sort by total fantasy points, highest first
+        combined = combined.sort_values(by="FantasyPoints", ascending=False)
+
+        return combined
+
+    @output
+    @render.data_frame
+    def combined_fantasy_table():
+        return df_combined_fantasy()
+
 # -------------------------
 # CREATE APP
 # -------------------------
 app = App(app_ui, server)
+
