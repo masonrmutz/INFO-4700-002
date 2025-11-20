@@ -163,7 +163,7 @@ def server(input, output, session):
         if input.player_search() and "Name" in df:
             df = df[df["Name"].str.contains(input.player_search(), case=False)]
         # Remove commas in numeric columns to prevent plotting issues
-        for col in ["YDS","TD","REC"]:
+        for col in ["YDS","TD"]:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.replace(",", "").astype(float)
         return df
@@ -192,7 +192,7 @@ def server(input, output, session):
             title = "RB Rushing: Yards vs Touchdowns"
         else:
             x_stat, y_stat = "YDS","TD"
-            title = "WR Receiving: Yards vs Receptions"
+            title = "WR Receiving: Yards vs Touchdowns"
 
         fig, ax = plt.subplots()
         scatter = ax.scatter(df[x_stat], df[y_stat], picker=True)  # enable hover picking
@@ -212,7 +212,7 @@ def server(input, output, session):
 
         # Label top 5 players visually
         try:
-            top = df.sort_values(by=y_stat, ascending=False).head(5)
+            top = df.sort_values(by=y_stat, ascending=False).head(3)
             if "Name" in top.columns:
                 for _, row in top.iterrows():
                     ax.annotate(row["Name"], (row[x_stat], row[y_stat]), textcoords="offset points", xytext=(5,5), fontsize=8)
