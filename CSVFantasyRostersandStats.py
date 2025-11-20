@@ -156,7 +156,7 @@ def server(input, output, session):
         ui.update_select("player2", choices=players)
 
     @reactive.Calc
-        def df_filtered():
+    def df_filtered():
         df = df_raw().copy()
 
         # --- Filters ---
