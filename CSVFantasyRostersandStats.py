@@ -156,18 +156,87 @@ def server(input, output, session):
         ui.update_select("player2", choices=players)
 
     @reactive.Calc
-    def df_filtered():
+        def df_filtered():
         df = df_raw().copy()
+
+        # --- Filters ---
         if input.team_select() != "All" and "Team" in df:
             df = df[df["Team"] == input.team_select()]
         if input.player_search() and "Name" in df:
             df = df[df["Name"].str.contains(input.player_search(), case=False)]
-        # Remove commas in numeric columns to prevent plotting issues
-        for col in ["YDS","TD"]:
-            if col in df.columns:
-                df[col] = df[col].astype(str).str.replace(",", "").astype(float)
-        return df
 
+        # --- Clean numeric columns (commas, strings) ---
+        numeric_cols = ["YDS", "TD", "REC", "RushYds", "RushTD", "RecYds", "RecTD"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = (
+                    df[col]
+                    .astype(str)
+                    .str.replace(",", "", regex=False)
+                    .astype(float)
+                )
+
+        # Helper to safely pull numeric series or 0 if column missing
+        def num_col(name, default=0.0):
+            if name in df.columns:
+                return pd.to_numeric(df[name], errors="coerce").fillna(0.0)
+            return pd.Series(default, index=df.index, dtype=float)
+
+        # --- Initialize FantasyPoints ---
+        df["FantasyPoints"] = 0.0
+
+        # --- QB SCORING ---
+        if input.stat_type() == "QB Passing":
+            # Assume:
+            #   YDS = passing yards
+            #   TD  = passing TD
+            pass_yds = num_col("YDS")
+            pass_td  = num_col("TD")
+
+            # Try to pick up rushing stats if present; otherwise 0
+            rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
+            rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
+
+            df["FantasyPoints"] = (
+                pass_yds / 25.0
+                + pass_td * 4.0
+                + rush_yds / 10.0
+                + rush_td * 6.0
+            )
+
+        # --- RB SCORING ---
+        elif input.stat_type() == "RB Rushing":
+            # 1 pt / 10 rushing or receiving yards
+            # 6 pts / rushing or receiving TD
+            # If your RB CSV only has YDS and TD, this covers both.
+            rush_rec_yds = num_col("YDS")
+            rush_rec_td  = num_col("TD")
+
+            # If you have separate receiving cols, you can add:
+            rush_rec_yds += num_col("RecYds")
+            rush_rec_td  += num_col("RecTD")
+
+            df["FantasyPoints"] = (
+                rush_rec_yds / 10.0
+                + rush_rec_td * 6.0
+            )
+
+        # --- WR SCORING ---
+        else:  # "WR Receiving"
+            # 1 pt / 10 receiving yards
+            # 6 pts / receiving TD
+            # 1 pt / reception (PPR)
+            rec_yds = num_col("YDS")      # receiving yards
+            rec_td  = num_col("TD")       # receiving TD
+            recs    = num_col("REC")      # receptions
+
+            df["FantasyPoints"] = (
+                rec_yds / 10.0
+                + rec_td * 6.0
+                + recs * 1.0
+            )
+
+        return df
     @output
     @render.data_frame
     def player_table():
