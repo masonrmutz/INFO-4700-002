@@ -10,11 +10,28 @@ RUSH_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/RUSH
 RECV_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/CATCHSTATScsv"
 FANTASY_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/SLEEPERAPIcsv"
 
-CSV_URLS = {
-    "QB Passing": QB_URL,
-    "RB Rushing": RUSH_URL,
-    "WR Receiving": RECV_URL,
+# Load CSVs once (like your original working version)
+CSV_DATA = {
+    "QB Passing": pd.read_csv(QB_URL),
+    "RB Rushing": pd.read_csv(RUSH_URL),
+    "WR Receiving": pd.read_csv(RECV_URL),
 }
+FANTASY_DATA = pd.read_csv(FANTASY_URL)
+
+# -------------------------
+# TEAMS LIST
+# -------------------------
+TEAMS = ["All"] + sorted([
+    "BUF", "MIA", "NYJ", "NE",
+    "BAL", "CIN", "PIT", "CLE",
+    "TEN", "IND", "JAX", "HOU",
+    "KC", "LAC", "LV", "DEN",
+    "PHI", "DAL", "NYG", "WAS",
+    "GB", "MIN", "DET", "CHI",
+    "TB", "NO", "ATL", "CAR",
+    "SF", "SEA", "LAR", "ARI",
+])
+
 
 # -------------------------
 # FANTASY POINTS HELPER
@@ -27,6 +44,11 @@ def add_fantasy_points(df: pd.DataFrame, stat_type: str) -> pd.DataFrame:
       - RB/WR: 1 pt per 10 yards, 6 pts per TD, 1 pt per reception (PPR)
     """
     df = df.copy()
+
+    # Make sure key stat columns are numeric
+    for col in ["YDS", "TD", "REC", "G", "GP", "Games"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     if stat_type == "QB Passing":
         yds = df["YDS"] if "YDS" in df.columns else 0
@@ -47,7 +69,8 @@ def add_fantasy_points(df: pd.DataFrame, stat_type: str) -> pd.DataFrame:
             break
 
     if games_col:
-        df["FantasyPtsPerGame"] = df["FantasyPts"] / df[games_col]
+        # Avoid division by zero
+        df["FantasyPtsPerGame"] = df["FantasyPts"] / df[games_col].replace(0, pd.NA)
     else:
         df["FantasyPtsPerGame"] = pd.NA
 
@@ -55,26 +78,11 @@ def add_fantasy_points(df: pd.DataFrame, stat_type: str) -> pd.DataFrame:
 
 
 # -------------------------
-# TEAMS LIST
-# -------------------------
-TEAMS = ["All"] + sorted([
-    "BUF", "MIA", "NYJ", "NE",
-    "BAL", "CIN", "PIT", "CLE",
-    "TEN", "IND", "JAX", "HOU",
-    "KC", "LAC", "LV", "DEN",
-    "PHI", "DAL", "NYG", "WAS",
-    "GB", "MIN", "DET", "CHI",
-    "TB", "NO", "ATL", "CAR",
-    "SF", "SEA", "LAR", "ARI",
-])
-
-
-# -------------------------
 # UI
 # -------------------------
 app_ui = ui.page_navbar(
     ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
-    ui.nav_panel("Interactive Chart", ui.output_plot("stat_plot")),
+    ui.nav_panel("Interactive Chart", ui.output_plot("stat_plot")),  # chart wired to stat_plot
     ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
     ui.nav_panel("Fantasy League", ui.output_data_frame("fantasy_table")),
     title="🏈 ESPN NFL Player Stats Dashboard",
@@ -95,33 +103,19 @@ app_ui = ui.page_navbar(
 # -------------------------
 def server(input, output, session):
 
-    # ---- Load main stats CSV based on stat_type ----
+    # ---- MAIN DATAFRAME (AUTO-SWITCHES BASED ON STAT TYPE) ----
     @reactive.Calc
+    @reactive.event(input.refresh, input.stat_type)
     def df_raw():
-        # make reactive on these
-        input.stat_type()
-        input.refresh()
-
-        stat_type = input.stat_type()
-        url = CSV_URLS.get(stat_type)
-
-        try:
-            df = pd.read_csv(url)
-        except Exception as e:
-            # If loading fails, return a tiny error dataframe instead of crashing
-            return pd.DataFrame({"Error": [f"Failed to load {stat_type} data: {e}"]})
-
-        df = add_fantasy_points(df, stat_type)
-        return df
+        base = CSV_DATA[input.stat_type()].copy()
+        base = add_fantasy_points(base, input.stat_type())
+        return base
 
     # ---- Populate Player Dropdowns ----
     @reactive.effect
     def _populate_players():
         df = df_raw()
-        if "Name" in df.columns:
-            players = sorted(df["Name"].dropna().unique())
-        else:
-            players = []
+        players = sorted(df["Name"].dropna().unique()) if "Name" in df.columns else []
         ui.update_select("player1", choices=players)
         ui.update_select("player2", choices=players)
 
@@ -129,10 +123,6 @@ def server(input, output, session):
     @reactive.Calc
     def df_filtered():
         df = df_raw().copy()
-
-        # If we only have an Error column, just return it as-is
-        if list(df.columns) == ["Error"]:
-            return df
 
         # Filter by team
         if input.team_select() != "All" and "Team" in df.columns:
@@ -156,14 +146,6 @@ def server(input, output, session):
     def stat_plot():
         df = df_filtered()
 
-        # If error dataframe, show error text instead of crashing
-        if list(df.columns) == ["Error"]:
-            fig, ax = plt.subplots()
-            msg = df["Error"].iloc[0]
-            ax.text(0.5, 0.5, msg, ha="center", va="center", fontsize=10, wrap=True)
-            ax.axis("off")
-            return fig
-
         if df.empty:
             fig, ax = plt.subplots()
             ax.text(0.5, 0.5, "No data to display.",
@@ -171,8 +153,8 @@ def server(input, output, session):
             ax.axis("off")
             return fig
 
-        # Pick which columns to plot based on stat type
         stat_type = input.stat_type()
+
         if stat_type == "QB Passing":
             x_stat, y_stat = "YDS", "TD"
             title = "QB Passing: Yards vs Touchdowns"
@@ -183,7 +165,6 @@ def server(input, output, session):
             x_stat, y_stat = "YDS", "REC"
             title = "WR Receiving: Yards vs Receptions"
 
-        # Safety: only draw if those columns exist
         if x_stat not in df.columns or y_stat not in df.columns:
             fig, ax = plt.subplots()
             ax.text(
@@ -200,7 +181,7 @@ def server(input, output, session):
         ax.set_ylabel(y_stat)
         ax.set_title(title)
 
-        # Optionally label a few points (top 5 by y_stat)
+        # Label top 5 by y_stat if we have names
         try:
             top = df.sort_values(by=y_stat, ascending=False).head(5)
             if "Name" in top.columns:
@@ -223,15 +204,13 @@ def server(input, output, session):
     @render.data_frame
     def comparison_table():
         df = df_filtered()
-
-        # If error dataframe, just return it
-        if list(df.columns) == ["Error"]:
-            return df
-
         p1 = input.player1()
         p2 = input.player2()
 
-        if not p1 or not p2 or "Name" not in df.columns:
+        if not p1 or not p2:
+            return pd.DataFrame()
+
+        if "Name" not in df.columns:
             return pd.DataFrame()
 
         return pd.concat([df[df["Name"] == p1], df[df["Name"] == p2]])
@@ -239,10 +218,7 @@ def server(input, output, session):
     # ---- Fantasy CSV Table (SLEEPER) ----
     @reactive.Calc
     def df_fantasy():
-        try:
-            return pd.read_csv(FANTASY_URL)
-        except Exception as e:
-            return pd.DataFrame({"Error": [f"Failed to load Sleeper data: {e}"]})
+        return FANTASY_DATA.copy()
 
     @output
     @render.data_frame
