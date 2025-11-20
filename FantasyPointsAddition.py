@@ -116,3 +116,103 @@ def server(input, output, session):
 
         # Filter by team
         if input.team_select() != "All" and "Team" in df.columns:
+            df = df[df["Team"] == input.team_select()]
+
+        # Filter by player name search
+        if input.player_search() and "Name" in df.columns:
+            df = df[df["Name"].str.contains(input.player_search(), case=False)]
+
+        return df
+
+    # ---- Data Table Output ----
+    @output
+    @render.data_frame
+    def player_table():
+        return df_filtered()
+
+    # ---- WORKING CHART (Matplotlib) ----
+    @output
+    @render.plot
+    def stat_plot():
+        df = df_filtered()
+
+        if df.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "No data to display.",
+                    ha="center", va="center", fontsize=12)
+            ax.axis("off")
+            return fig
+
+        # Pick which columns to plot based on stat type
+        if input.stat_type() == "QB Passing":
+            x_stat, y_stat = "YDS", "TD"
+            title = "QB Passing: Yards vs Touchdowns"
+        elif input.stat_type() == "RB Rushing":
+            x_stat, y_stat = "YDS", "TD"
+            title = "RB Rushing: Yards vs Touchdowns"
+        else:
+            x_stat, y_stat = "YDS", "REC"
+            title = "WR Receiving: Yards vs Receptions"
+
+        # Safety: only draw if those columns exist
+        if x_stat not in df.columns or y_stat not in df.columns:
+            fig, ax = plt.subplots()
+            ax.text(
+                0.5, 0.5,
+                f"Columns {x_stat} and/or {y_stat} not found in data.",
+                ha="center", va="center", fontsize=10,
+            )
+            ax.axis("off")
+            return fig
+
+        fig, ax = plt.subplots()
+        ax.scatter(df[x_stat], df[y_stat])
+        ax.set_xlabel(x_stat)
+        ax.set_ylabel(y_stat)
+        ax.set_title(title)
+
+        # Optionally label a few points (top 5 by y_stat)
+        try:
+            top = df.sort_values(by=y_stat, ascending=False).head(5)
+            if "Name" in top.columns:
+                for _, row in top.iterrows():
+                    ax.annotate(
+                        row["Name"],
+                        (row[x_stat], row[y_stat]),
+                        textcoords="offset points",
+                        xytext=(5, 5),
+                        fontsize=8,
+                    )
+        except Exception:
+            pass
+
+        fig.tight_layout()
+        return fig
+
+    # ---- Player Comparison Table ----
+    @output
+    @render.data_frame
+    def comparison_table():
+        df = df_filtered()
+        p1 = input.player1()
+        p2 = input.player2()
+
+        if not p1 or not p2:
+            return pd.DataFrame()
+
+        return pd.concat([df[df["Name"] == p1], df[df["Name"] == p2]])
+
+    # ---- Fantasy CSV Table (SLEEPER) ----
+    @reactive.Calc
+    def df_fantasy():
+        return FANTASY_DATA.copy()
+
+    @output
+    @render.data_frame
+    def fantasy_table():
+        return df_fantasy()
+
+# -------------------------
+# Create App
+# -------------------------
+app = App(app_ui, server)
