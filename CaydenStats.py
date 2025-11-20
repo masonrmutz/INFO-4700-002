@@ -35,7 +35,7 @@ def get_owner_label(row):
         row.get("team_name") or row.get("team")
     )
 
-def expand_fantasy(df: pd.DataFrame) -> pd.DataFrame:
+def expand_fantasy(df: pd.DataFrame):
     df = df.copy()
     for col in ["starters", "players", "bench"]:
         if col in df.columns:
@@ -98,7 +98,7 @@ def fantasy_rosters_pivot(df):
     return pd.DataFrame(rows)
 
 # Helper: compute fantasy points for a raw stats DataFrame (for combined table)
-def add_fantasy_points(df: pd.DataFrame, stat_type: str) -> pd.DataFrame:
+def add_fantasy_points(df: pd.DataFrame, stat_type: str):
     df = df.copy()
 
     # Clean numeric-like columns
