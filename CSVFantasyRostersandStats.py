@@ -191,7 +191,7 @@ def server(input, output, session):
             x_stat, y_stat = "YDS","TD"
             title = "RB Rushing: Yards vs Touchdowns"
         else:
-            x_stat, y_stat = "YDS","REC"
+            x_stat, y_stat = "YDS","TD"
             title = "WR Receiving: Yards vs Receptions"
 
         fig, ax = plt.subplots()
