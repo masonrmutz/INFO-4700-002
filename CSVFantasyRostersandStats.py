@@ -126,6 +126,7 @@ app_ui = ui.page_navbar(
     ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
     ui.nav_panel("Fantasy Standings", ui.output_data_frame("fantasy_standings_table")),
     ui.nav_panel("Fantasy Rosters", ui.output_data_frame("fantasy_rosters_table")),
+    ui.nav_panel("Top Fantasy Points", ui.output_plot("fantasy_points_plot")),  # New Tab
     title="🏈 ESPN NFL Player Stats Dashboard",
     sidebar=ui.sidebar(
         ui.input_select("stat_type", "Select Stat Type:", ["QB Passing","RB Rushing","WR Receiving"]),
@@ -187,13 +188,8 @@ def server(input, output, session):
 
         # --- QB SCORING ---
         if input.stat_type() == "QB Passing":
-            # Assume:
-            #   YDS = passing yards
-            #   TD  = passing TD
             pass_yds = num_col("YDS")
             pass_td  = num_col("TD")
-
-            # Try to pick up rushing stats if present; otherwise 0
             rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
             rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
 
@@ -206,13 +202,8 @@ def server(input, output, session):
 
         # --- RB SCORING ---
         elif input.stat_type() == "RB Rushing":
-            # 1 pt / 10 rushing or receiving yards
-            # 6 pts / rushing or receiving TD
-            # If your RB CSV only has YDS and TD, this covers both.
             rush_rec_yds = num_col("YDS")
             rush_rec_td  = num_col("TD")
-
-            # If you have separate receiving cols, you can add:
             rush_rec_yds += num_col("RecYds")
             rush_rec_td  += num_col("RecTD")
 
@@ -222,14 +213,10 @@ def server(input, output, session):
             ).round(2)
 
         # --- WR SCORING ---
-        else:  # "WR Receiving"
-            # 1 pt / 10 receiving yards
-            # 6 pts / receiving TD
-            # 1 pt / reception (PPR)
-            rec_yds = num_col("YDS")      # receiving yards
-            rec_td  = num_col("TD")       # receiving TD
-            recs    = num_col("REC")      # receptions
-
+        else:
+            rec_yds = num_col("YDS")
+            rec_td  = num_col("TD")
+            recs    = num_col("REC")
             df["FantasyPoints"] = (
                 rec_yds / 10.0
                 + rec_td * 6.0
@@ -237,12 +224,14 @@ def server(input, output, session):
             ).round(2)
 
         return df
+
+    # ---- Player Table ----
     @output
     @render.data_frame
     def player_table():
         return df_filtered()
 
-    # ---- WORKING CHART WITH HOVER (Matplotlib + mplcursors) ----
+    # ---- Interactive Chart (existing) ----
     @output
     @render.plot
     def stat_plot():
@@ -253,26 +242,19 @@ def server(input, output, session):
             ax.axis("off")
             return fig
 
-        # Determine axis stats
         x_stat, y_stat = "YDS", "TD"
         title = f"{input.stat_type()}: Yards vs Touchdowns"
 
         fig, ax = plt.subplots()
-
         scatter = ax.scatter(df[x_stat], df[y_stat], picker=True)
 
         ax.set_xlabel(x_stat)
         ax.set_ylabel(y_stat)
         ax.set_title(title)
 
-        # Let matplotlib determine the limits dynamically
-        # This solves your clustering issue without log scale
-
-        # Hover tooltip
         cursor = mplcursors.cursor(scatter, hover=True)
         cursor.connect("add", lambda sel: sel.annotation.set_text(df.iloc[sel.target.index]["Name"]))
 
-        # Label the top 3 players by touchdowns
         try:
             top = df.sort_values(by=y_stat, ascending=False).head(3)
             for _, row in top.iterrows():
@@ -284,7 +266,7 @@ def server(input, output, session):
         fig.tight_layout()
         return fig
 
-    # ---- Player Comparison Table ----
+    # ---- Player Comparison ----
     @output
     @render.data_frame
     def comparison_table():
@@ -320,6 +302,41 @@ def server(input, output, session):
     @render.data_frame
     def fantasy_rosters_table():
         return df_fantasy_rosters()
+
+    # ---- Top Fantasy Points Plot (vertical) ----
+    # ---- Top Fantasy Points Plot (vertical, top player at top) ----
+    @output
+    @render.plot
+    def fantasy_points_plot():
+        df = df_filtered()
+        if df.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "No data to display.", ha="center", va="center", fontsize=12)
+            ax.axis("off")
+            return fig
+
+        # Get top 20 players by FantasyPoints
+        df_top = df.sort_values(by="FantasyPoints", ascending=False).head(20)
+
+        fig, ax = plt.subplots(figsize=(6, 8))
+
+        # y positions reversed so highest fantasy points at the top
+        y_pos = range(len(df_top)-1, -1, -1)
+
+        ax.scatter(df_top["FantasyPoints"], y_pos, s=100)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(df_top["Name"])
+        ax.set_xlabel("Fantasy Points")
+        ax.set_ylabel("Player")
+        ax.set_title(f"Top 20 {input.stat_type()} Fantasy Point Getters")
+
+        # Add point labels
+        for i, row in zip(y_pos, df_top.itertuples()):
+            ax.text(row.FantasyPoints + 0.5, i, f"{row.FantasyPoints:.1f}", va="center", fontsize=8)
+
+        fig.tight_layout()
+        return fig
+
 
 # -------------------------
 # CREATE APP
