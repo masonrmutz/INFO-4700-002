@@ -1,0 +1,715 @@
+import time
+import pandas as pd
+import base64 
+import requests 
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+
+# config
+URL_PASSING = "https://www.espn.com/nfl/stats/player/_/stat/passing"
+
+# helpers
+def build_driver(headless=True):
+    opts = Options()
+    if headless:
+        opts.add_argument("--headless=new")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--window-size=1400,1000")
+    opts.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+
+def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_clicks=100):
+    """
+    Click ESPN's 'Show More' link until it disappears or row count stops increasing.
+    """
+    left_rows_css = ".Table--fixed-left tbody tr.Table__TR[data-idx]"
+
+    def row_count():
+        return len(table_container.find_elements(By.CSS_SELECTOR, left_rows_css))
+
+    def find_show_more():
+        # Check inside table first
+        local = table_container.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
+        if local:
+            return next((x for x in local if x.is_displayed() and x.is_enabled()), None)
+        # Fallback: global page-level link
+        page = driver.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
+        return next((x for x in page if x.is_displayed() and x.is_enabled()), None)
+
+    clicks = 0
+    prev = row_count()
+
+    while clicks < max_clicks:
+        link = find_show_more()
+        if not link:
+            break
+
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", link)
+        try:
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")))
+            link.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", link)
+
+        time.sleep(pause)
+
+        new = row_count()
+        if new <= prev:
+            time.sleep(0.7)
+            new = row_count()
+            if new <= prev:
+                break
+        prev = new
+        clicks += 1
+
+# PASSING scraper
+def scrape_espn_passing_with_selenium(headless=True):
+    driver = build_driver(headless=headless)
+    wait = WebDriverWait(driver, 20)
+
+    try:
+        driver.get(URL_PASSING)
+
+        # Wait for ResponsiveTables
+        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.ResponsiveTable")))
+        tables = driver.find_elements(By.CSS_SELECTOR, "div.ResponsiveTable")
+
+        # Find the passing stats block
+        passing_block = None
+        for block in tables:
+            link = block.find_elements(By.CSS_SELECTOR, 'thead a[href*="/stat/passing/"]')
+            if link:
+                passing_block = block
+                break
+
+        if passing_block is None:
+            raise RuntimeError("Couldn't find the passing stats table on the page.")
+
+        # Click "Show More" until all rows are loaded
+        click_show_more_until_done(driver, passing_block, wait)
+
+        # LEFT: rank + name + team
+        player_summary = {}
+        for row in passing_block.find_elements(By.CSS_SELECTOR, ".Table--fixed-left tbody tr.Table__TR"):
+            idx = row.get_attribute("data-idx")
+            if not idx:
+                continue
+
+            tds = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
+            rk = tds[0].text.strip() if tds else ""
+
+            try:
+                name = row.find_element(By.CSS_SELECTOR, "a.AnchorLink").text.strip()
+            except:
+                name = ""
+
+            try:
+                team = row.find_element(By.CSS_SELECTOR, ".athleteCell__teamAbbrev").text.strip()
+            except:
+                team = ""
+
+            player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
+
+        # RIGHT: headers + stat rows
+        stat_headers = [th.text.strip() for th in passing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller thead th")]
+        header_positions = {h: i for i, h in enumerate(stat_headers)}
+
+        desired_columns = ["POS","GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG","TD","INT","SACK","SYL","QBR","RTG"]
+
+        player_stats = {}
+        for row in passing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller tbody tr.Table__TR"):
+            idx = row.get_attribute("data-idx")
+            if not idx:
+                continue
+            cells = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
+            texts = [c.text.strip() for c in cells]
+
+            line = {}
+            for h in desired_columns:
+                pos = header_positions.get(h, None)
+                line[h] = texts[pos] if (pos is not None and pos < len(texts)) else ""
+            player_stats[idx] = line
+
+        # MERGE + DataFrame
+        rows = []
+        for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
+            rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
+
+        order = ["RK","Name","Team"] + desired_columns
+        df_passing = pd.DataFrame(rows)
+        df_passing = df_passing[[c for c in order if c in df_passing.columns]]
+
+        # Save & preview
+        pd.set_option('display.max_rows', None)
+        pd.set_option('display.max_columns', None)
+        df_passing.to_csv("espn_passing.csv", index=False)
+        print(df_passing)
+        print("\nSaved to espn_passing.csv")
+
+        return df_passing
+
+    finally:
+        driver.quit()
+
+# GitHub upload helper
+def upload_csv_to_github(
+    csv_path,
+    repo="masonrmutz/INFO-4700-002",
+    github_path="QBSTATScsv",
+    branch="main"
+):
+    """
+    Uploads/overwrites a file in a GitHub repo using the Contents API.
+    Uses a personal access token embedded directly in the code.
+    """
+    token = "*****" 
+
+    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
+        raise RuntimeError("You must set your GitHub token in the script.")
+
+    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    # Read CSV and base64-encode
+    with open(csv_path, "rb") as f:
+        content = f.read()
+    b64_content = base64.b64encode(content).decode("utf-8")
+
+    # Get current file SHA
+    sha = None
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    elif r.status_code != 404:
+        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
+
+    payload = {
+        "message": "Update ESPN QB passing stats",
+        "content": b64_content,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, headers=headers, json=payload)
+    if not r.ok:
+        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
+
+    data = r.json()
+    html_url = data.get("content", {}).get("html_url", url)
+    print(f"Uploaded to GitHub: {html_url}")
+
+# --- run ---
+if __name__ == "__main__":
+    df = scrape_espn_passing_with_selenium(headless=True)
+    upload_csv_to_github("espn_passing.csv")
+
+#__________________________________
+import time
+import pandas as pd
+import base64 
+import requests 
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+
+URL = "https://www.espn.com/nfl/stats/player/_/stat/rushing"
+
+def build_driver(headless=True):
+    opts = Options()
+    if headless:
+        opts.add_argument("--headless=new")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--window-size=1400,1000")
+    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0.0.0 Safari/537.36")
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+
+def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_clicks=100):
+    """
+    Click ESPN's 'Show More' link until it disappears or row count stops increasing.
+    """
+    left_rows_css = ".Table--fixed-left tbody tr.Table__TR[data-idx]"
+
+    def row_count():
+        return len(table_container.find_elements(By.CSS_SELECTOR, left_rows_css))
+
+    def find_show_more():
+        # Check inside table first
+        local = table_container.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
+        if local:
+            return next((x for x in local if x.is_displayed() and x.is_enabled()), None)
+        # Fallback: global page-level link
+        page = driver.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
+        return next((x for x in page if x.is_displayed() and x.is_enabled()), None)
+
+    clicks = 0
+    prev = row_count()
+
+    while clicks < max_clicks:
+        link = find_show_more()
+        if not link:
+            break
+
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", link)
+        try:
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")))
+            link.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", link)
+
+        time.sleep(pause)
+
+        new = row_count()
+        if new <= prev:
+            time.sleep(0.7)
+            new = row_count()
+            if new <= prev:
+                break
+        prev = new
+        clicks += 1
+
+def scrape_espn_rushing_with_selenium(headless=True):
+    driver = build_driver(headless=headless)
+    wait = WebDriverWait(driver, 20)
+
+    try:
+        driver.get(URL)
+
+        # Wait for ResponsiveTables
+        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.ResponsiveTable")))
+        tables = driver.find_elements(By.CSS_SELECTOR, "div.ResponsiveTable")
+
+        rushing_block = None
+        for block in tables:
+            link = block.find_elements(By.CSS_SELECTOR, 'thead a[href*="/stat/rushing/"]')
+            if link:
+                rushing_block = block
+                break
+
+        if rushing_block is None:
+            raise RuntimeError("Couldn't find the rushing stats table on the page.")
+
+        # Click "Show More" until all rows are loaded
+        click_show_more_until_done(driver, rushing_block, wait)
+
+        # LEFT: rank + name + team
+        player_summary = {}
+        for row in rushing_block.find_elements(By.CSS_SELECTOR, ".Table--fixed-left tbody tr.Table__TR"):
+            idx = row.get_attribute("data-idx")
+            if not idx:
+                continue
+
+            tds = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
+            rk = tds[0].text.strip() if tds else ""
+
+            try:
+                name = row.find_element(By.CSS_SELECTOR, "a.AnchorLink").text.strip()
+            except:
+                name = ""
+
+            try:
+                team = row.find_element(By.CSS_SELECTOR, ".athleteCell__teamAbbrev").text.strip()
+            except:
+                team = ""
+
+            player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
+
+        # RIGHT: headers + stat rows
+        stat_headers = [th.text.strip() for th in rushing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller thead th")]
+        header_positions = {h: i for i, h in enumerate(stat_headers)}
+
+        desired_columns = ["POS","GP","ATT","YDS","AVG","LNG","BIG","TD","YDS/G","FUM","LST","FD"]
+
+        player_stats = {}
+        for row in rushing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller tbody tr.Table__TR"):
+            idx = row.get_attribute("data-idx")
+            if not idx:
+                continue
+            cells = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
+            texts = [c.text.strip() for c in cells]
+
+            line = {}
+            for h in desired_columns:
+                pos = header_positions.get(h, None)
+                line[h] = texts[pos] if (pos is not None and pos < len(texts)) else ""
+            player_stats[idx] = line
+
+        # MERGE + DataFrame 
+        rows = []
+        for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
+            rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
+
+        order = ["RK","Name","Team"] + desired_columns
+        df_rushing = pd.DataFrame(rows)
+        df_rushing = df_rushing[[c for c in order if c in df_rushing.columns]]
+
+        # Save & preview
+        pd.set_option('display.max_rows', None)
+        pd.set_option('display.max_columns', None)
+        df_rushing.to_csv("espn_rushing.csv", index=False)
+        print(df_rushing)
+        print("\nSaved to espn_rushing.csv")
+
+        return df_rushing
+
+    finally:
+        driver.quit()
+
+# GitHub upload helper
+def upload_csv_to_github(
+    csv_path,
+    repo="masonrmutz/INFO-4700-002",
+    github_path="RUSHSTATScsv",
+    branch="main"
+):
+    """
+    Uploads/overwrites a file in a GitHub repo using the Contents API.
+    Uses a personal access token embedded directly in the code.
+    """
+    token = "******" 
+
+    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
+        raise RuntimeError("You must set your GitHub token in the script.")
+
+    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    # Read CSV and base64-encode
+    with open(csv_path, "rb") as f:
+        content = f.read()
+    b64_content = base64.b64encode(content).decode("utf-8")
+
+    # Get current file SHA 
+    sha = None
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    elif r.status_code != 404:
+        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
+
+    payload = {
+        "message": "Update ESPN rushing stats",
+        "content": b64_content,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, headers=headers, json=payload)
+    if not r.ok:
+        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
+
+    data = r.json()
+    html_url = data.get("content", {}).get("html_url", url)
+    print(f"Uploaded to GitHub: {html_url}")
+
+if __name__ == "__main__":
+    df = scrape_espn_rushing_with_selenium(headless=True)
+    upload_csv_to_github("espn_rushing.csv")
+#___________________________________________
+import time
+import pandas as pd
+import base64
+import requests
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+URL_RECEIVING = "https://www.espn.com/nfl/stats/player/_/stat/receiving"
+
+def scrape_espn_receiving_with_selenium(headless=True):
+    driver = build_driver(headless=headless)
+    wait = WebDriverWait(driver, 20)
+
+    try:
+        driver.get(URL_RECEIVING)
+
+        # Wait for ResponsiveTables
+        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.ResponsiveTable")))
+        tables = driver.find_elements(By.CSS_SELECTOR, "div.ResponsiveTable")
+
+        # Find the receiving stats block
+        receiving_block = None
+        for block in tables:
+            link = block.find_elements(By.CSS_SELECTOR, 'thead a[href*="/stat/receiving/"]')
+            if link:
+                receiving_block = block
+                break
+
+        if receiving_block is None:
+            raise RuntimeError("Couldn't find the receiving stats table on the page.")
+
+        # Click "Show More" until all rows are loaded
+        click_show_more_until_done(driver, receiving_block, wait)
+
+        #LEFT: rank + name + team
+        player_summary = {}
+        for row in receiving_block.find_elements(By.CSS_SELECTOR, ".Table--fixed-left tbody tr.Table__TR"):
+            idx = row.get_attribute("data-idx")
+            if not idx:
+                continue
+
+            tds = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
+            rk = tds[0].text.strip() if tds else ""
+
+            try:
+                name = row.find_element(By.CSS_SELECTOR, "a.AnchorLink").text.strip()
+            except:
+                name = ""
+
+            try:
+                team = row.find_element(By.CSS_SELECTOR, ".athleteCell__teamAbbrev").text.strip()
+            except:
+                team = ""
+
+            player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
+
+        # RIGHT: headers + stat rows
+        stat_headers = [th.text.strip() for th in receiving_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller thead th")]
+        header_positions = {h: i for i, h in enumerate(stat_headers)}
+
+        # ESPN receiving stat columns
+        desired_columns = [
+            "POS","GP","REC","TGTS","YDS","AVG","YDS/G","LNG","TD","20+","40+",
+            "FUM","LST","FD","YAC","DROP","CTCH%"
+        ]
+
+        player_stats = {}
+        for row in receiving_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller tbody tr.Table__TR"):
+            idx = row.get_attribute("data-idx")
+            if not idx:
+                continue
+            cells = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
+            texts = [c.text.strip() for c in cells]
+
+            line = {}
+            for h in desired_columns:
+                pos = header_positions.get(h, None)
+                line[h] = texts[pos] if (pos is not None and pos < len(texts)) else ""
+            player_stats[idx] = line
+
+        # MERGE + DataFrame
+        rows = []
+        for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
+            rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
+
+        order = ["RK","Name","Team"] + desired_columns
+        df_receiving = pd.DataFrame(rows)
+        df_receiving = df_receiving[[c for c in order if c in df_receiving.columns]]
+
+        # Save & preview
+        pd.set_option('display.max_rows', None)
+        pd.set_option('display.max_columns', None)
+        df_receiving.to_csv("espn_receiving.csv", index=False)
+        print(df_receiving)
+        print("\nSaved to espn_receiving.csv")
+
+        return df_receiving
+
+    finally:
+        driver.quit()
+
+# GitHub upload helper
+def upload_csv_to_github(
+    csv_path,
+    repo="masonrmutz/INFO-4700-002",
+    github_path="CATCHSTATScsv",
+    branch="main"
+):
+    """
+    Uploads/overwrites a file in a GitHub repo using the Contents API.
+    Uses a personal access token embedded directly in the code.
+    """
+    token = "***" 
+
+    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
+        raise RuntimeError("You must set your GitHub token in the script.")
+
+    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    # Read CSV and base64-encode
+    with open(csv_path, "rb") as f:
+        content = f.read()
+    b64_content = base64.b64encode(content).decode("utf-8")
+
+    # Get current file SHA (needed for update)
+    sha = None
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    elif r.status_code != 404:
+        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
+
+    payload = {
+        "message": "Update ESPN receiving stats",
+        "content": b64_content,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, headers=headers, json=payload)
+    if not r.ok:
+        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
+
+    data = r.json()
+    html_url = data.get("content", {}).get("html_url", url)
+    print(f"Uploaded to GitHub: {html_url}")
+
+if __name__ == "__main__":
+    df = scrape_espn_receiving_with_selenium(headless=True)
+    upload_csv_to_github("espn_receiving.csv")
+#_______________________________________________________
+import requests
+import pandas as pd
+
+league_id = "1180222056477925376"
+
+league = requests.get(f"https://api.sleeper.app/v1/league/{league_id}").json()
+users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users").json()
+rosters = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/rosters").json()
+players = requests.get("https://api.sleeper.app/v1/players/nfl").json()
+
+user_map = {u["user_id"]: u["display_name"] for u in users}
+
+combined_data = []
+for roster in rosters:
+    owner_name = user_map.get(roster.get("owner_id"), "Unknown")
+    player_ids = roster.get("players", [])
+    starter_ids = roster.get("starters", [])
+
+    starters = [players[p].get("full_name", "Unknown Player") for p in starter_ids if p in players]
+    bench = [players[p].get("full_name", "Unknown Player") for p in player_ids if p not in starter_ids and p in players]
+
+    combined_data.append({
+        "owner": owner_name,
+        "starters": starters,
+        "bench": bench,
+        "wins": roster.get("settings", {}).get("wins", 0),
+        "losses": roster.get("settings", {}).get("losses", 0),
+        "points": roster.get("settings", {}).get("fpts", 0),
+    })
+
+df = pd.DataFrame(combined_data)
+print(df)
+#________________________________________________
+import requests
+import pandas as pd
+import base64  # NEW
+
+league_id = "1180222056477925376"
+
+league = requests.get(f"https://api.sleeper.app/v1/league/{league_id}").json()
+users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users").json()
+rosters = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/rosters").json()
+players = requests.get("https://api.sleeper.app/v1/players/nfl").json()
+
+user_map = {u["user_id"]: u["display_name"] for u in users}
+
+combined_data = []
+for roster in rosters:
+    owner_name = user_map.get(roster.get("owner_id"), "Unknown")
+    player_ids = roster.get("players", [])
+    starter_ids = roster.get("starters", [])
+
+    starters = [players[p].get("full_name", "Unknown Player") for p in starter_ids if p in players]
+    bench = [players[p].get("full_name", "Unknown Player") for p in player_ids if p not in starter_ids and p in players]
+
+    combined_data.append({
+        "owner": owner_name,
+        "starters": starters,
+        "bench": bench,
+        "wins": roster.get("settings", {}).get("wins", 0),
+        "losses": roster.get("settings", {}).get("losses", 0),
+        "points": roster.get("settings", {}).get("fpts", 0),
+    })
+
+df = pd.DataFrame(combined_data)
+print(df)
+
+# Save to CSV
+df.to_csv("sleeper_league.csv", index=False)
+print("\nSaved to sleeper_league.csv")
+
+# --- GitHub upload helper (same pattern as the ESPN scripts) ---
+def upload_csv_to_github(
+    csv_path,
+    repo="masonrmutz/INFO-4700-002",
+    github_path="SLEEPERAPIcsv",
+    branch="main"
+):
+    """
+    Uploads/overwrites a file in a GitHub repo using the Contents API.
+    Uses a personal access token embedded directly in the code.
+    """
+    token = "***"
+
+    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
+        raise RuntimeError("You must set your GitHub token in the script.")
+
+    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    # Read CSV and base64-encode
+    with open(csv_path, "rb") as f:
+        content = f.read()
+    b64_content = base64.b64encode(content).decode("utf-8")
+
+    # Get current file SHA (needed for update)
+    sha = None
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    elif r.status_code != 404:
+        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
+
+    payload = {
+        "message": "Update Sleeper league data",
+        "content": b64_content,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, headers=headers, json=payload)
+    if not r.ok:
+        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
+
+    data = r.json()
+    html_url = data.get("content", {}).get("html_url", url)
+    print(f"Uploaded to GitHub: {html_url}")
+
+# actually upload
+upload_csv_to_github("sleeper_league.csv")
