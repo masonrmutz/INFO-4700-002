@@ -253,38 +253,31 @@ def server(input, output, session):
             ax.axis("off")
             return fig
 
-        if input.stat_type() == "QB Passing":
-            x_stat, y_stat = "YDS","TD"
-            title = "QB Passing: Yards vs Touchdowns"
-        elif input.stat_type() == "RB Rushing":
-            x_stat, y_stat = "YDS","TD"
-            title = "RB Rushing: Yards vs Touchdowns"
-        else:
-            x_stat, y_stat = "YDS","TD"
-            title = "WR Receiving: Yards vs Touchdowns"
+        # Determine axis stats
+        x_stat, y_stat = "YDS", "TD"
+        title = f"{input.stat_type()}: Yards vs Touchdowns"
 
         fig, ax = plt.subplots()
-        scatter = ax.scatter(df[x_stat], df[y_stat], picker=True)  # enable hover picking
+
+        scatter = ax.scatter(df[x_stat], df[y_stat], picker=True)
+
         ax.set_xlabel(x_stat)
         ax.set_ylabel(y_stat)
         ax.set_title(title)
 
-        # Axes
-        ax.set_xlim(0, 5000)
-        ax.set_xticks(range(0, 5001, 500))
-        ax.set_ylim(0, 50)
-        ax.set_yticks(range(0, 51, 10))
+        # Let matplotlib determine the limits dynamically
+        # This solves your clustering issue without log scale
 
-        # Hover tooltip for player names
+        # Hover tooltip
         cursor = mplcursors.cursor(scatter, hover=True)
         cursor.connect("add", lambda sel: sel.annotation.set_text(df.iloc[sel.target.index]["Name"]))
 
-        # Label top 5 players visually
+        # Label the top 3 players by touchdowns
         try:
             top = df.sort_values(by=y_stat, ascending=False).head(3)
-            if "Name" in top.columns:
-                for _, row in top.iterrows():
-                    ax.annotate(row["Name"], (row[x_stat], row[y_stat]), textcoords="offset points", xytext=(5,5), fontsize=8)
+            for _, row in top.iterrows():
+                ax.annotate(row["Name"], (row[x_stat], row[y_stat]),
+                            textcoords="offset points", xytext=(5, 5), fontsize=8)
         except Exception:
             pass
 
