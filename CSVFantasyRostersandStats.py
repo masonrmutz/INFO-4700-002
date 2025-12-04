@@ -191,7 +191,9 @@ def server(input, output, session):
                 + rec_td * 6.0
                 + recs * 1.0
             ).round(2)
-          
+
+        # Fantasyt Points Per Game
+        
         if "GP" in df.columns:
             games = pd.to_numeric(df["GP"], errors="coerce").replace(0, pd.NA)
         else:
@@ -199,6 +201,20 @@ def server(input, output, session):
 
         df["FantasyPointsPerGame"] = (
         df["FantasyPoints"] / games
+        ).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+
+        # Tuddy Dependency
+        if input.stat_type() == "QB Passing":
+            td_points = num_col("TD") * 4.0 + num_col("RushTD") * 6.0
+
+        elif input.stat_type() == "RB Rushing":
+            td_points = (num_col("TD") + num_col("RecTD")) * 6.0
+
+        else:  # WR Receiving
+            td_points = num_col("TD") * 6.0
+
+        df["TDDependency"] = (
+        (td_points / df["FantasyPoints"]) * 100
         ).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
 
         return df
