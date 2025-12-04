@@ -192,7 +192,7 @@ def server(input, output, session):
                 + recs * 1.0
             ).round(2)
 
-        return df
+    
 
         if "GP" in df.columns:
             games = pd.to_numeric(df["GP"], errors="coerce").replace(0, pd.NA)
@@ -202,7 +202,10 @@ def server(input, output, session):
             df["FantasyPointsPerGame"] = (
             df["FantasyPoints"] / games
         ).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-            
+
+        return df
+
+    
     @output
     @render.data_frame
     def player_table():
