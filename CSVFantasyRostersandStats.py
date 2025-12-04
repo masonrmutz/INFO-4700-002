@@ -217,6 +217,25 @@ def server(input, output, session):
         (td_points / df["FantasyPoints"]) * 100
         ).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
 
+        # Fantasy points per attempt, rush, or target
+        if input.stat_type() == "QB Passing":
+            attempts = num_col("ATT")
+            df["FantasyPointsPerAttempt"] = (
+                df["FantasyPoints"] / attempts.replace(0, pd.NA)
+                ).fillna(0).round(3)
+
+        elif input.stat_type() == "RB Rushing":
+            rush_attempts = num_col("ATT")
+            df["FantasyPointsPerRush"] = (
+            df["FantasyPoints"] / rush_attempts.replace(0, pd.NA)
+            ).fillna(0).round(3)
+
+        elif input.stat_type() == "WR Receiving":
+            targets = num_col("TGT")
+            df["FantasyPointsPerTarget"] = (
+            df["FantasyPoints"] / targets.replace(0, pd.NA)
+            ).fillna(0).round(3)
+
         return df
     
     
