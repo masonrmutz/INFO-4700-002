@@ -1,8 +1,0 @@
-shiny
-pandas
-altair
-numpy
-jinja2
-python-dateutil
-matplotlib
-mplcursors
