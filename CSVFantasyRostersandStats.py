@@ -184,46 +184,59 @@ def server(input, output, session):
             return pd.Series(default, index=df.index, dtype=float)
 
         # --- Initialize FantasyPoints ---
-        df["FantasyPoints"] = 0.0
+df["FantasyPoints"] = 0.0
 
-        # --- QB SCORING ---
-        if input.stat_type() == "QB Passing":
-            pass_yds = num_col("YDS")
-            pass_td  = num_col("TD")
-            rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
-            rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
+# --- QB SCORING ---
+if input.stat_type() == "QB Passing":
+    pass_yds = num_col("YDS")
+    pass_td  = num_col("TD")
+    rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
+    rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
 
-            df["FantasyPoints"] = (
-                pass_yds / 25.0
-                + pass_td * 4.0
-                + rush_yds / 10.0
-                + rush_td * 6.0
-            ).round(2)
+    df["FantasyPoints"] = (
+        pass_yds / 25.0
+        + pass_td * 4.0
+        + rush_yds / 10.0
+        + rush_td * 6.0
+    ).round(2)
 
-        # --- RB SCORING ---
-        elif input.stat_type() == "RB Rushing":
-            rush_rec_yds = num_col("YDS")
-            rush_rec_td  = num_col("TD")
-            rush_rec_yds += num_col("RecYds")
-            rush_rec_td  += num_col("RecTD")
+# --- RB SCORING ---
+elif input.stat_type() == "RB Rushing":
+    rush_rec_yds = num_col("YDS")
+    rush_rec_td  = num_col("TD")
+    rush_rec_yds += num_col("RecYds")
+    rush_rec_td  += num_col("RecTD")
 
-            df["FantasyPoints"] = (
-                rush_rec_yds / 10.0
-                + rush_rec_td * 6.0
-            ).round(2)
+    df["FantasyPoints"] = (
+        rush_rec_yds / 10.0
+        + rush_rec_td * 6.0
+    ).round(2)
 
-        # --- WR SCORING ---
-        else:
-            rec_yds = num_col("YDS")
-            rec_td  = num_col("TD")
-            recs    = num_col("REC")
-            df["FantasyPoints"] = (
-                rec_yds / 10.0
-                + rec_td * 6.0
-                + recs * 1.0
-            ).round(2)
+# --- WR SCORING ---
+else:
+    rec_yds = num_col("YDS")
+    rec_td  = num_col("TD")
+    recs    = num_col("REC")
+    df["FantasyPoints"] = (
+        rec_yds / 10.0
+        + rec_td * 6.0
+        + recs * 1.0
+    ).round(2)
 
-        return df
+# --- Fantasy Points Per Game (FPPG) ---
+games = None
+for gcol in ["G", "Games", "GP", "games_played"]:
+    if gcol in df.columns:
+        games = num_col(gcol)
+        break
+
+if games is not None:
+    df["FantasyPointsPerGame"] = (df["FantasyPoints"] / games).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+else:
+    df["FantasyPointsPerGame"] = 0.0
+
+return df
+
 
     # ---- Player Table ----
     @output
