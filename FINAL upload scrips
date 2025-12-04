@@ -1,715 +1,299 @@
-import time
 import pandas as pd
-import base64 
-import requests 
+import matplotlib.pyplot as plt
+import ast
+import mplcursors
+from shiny import App, ui, render, reactive
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+QB_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/QBSTATScsv"
+RUSH_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/RUSHSTATScsv"
+RECV_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/CATCHSTATScsv"
+FANTASY_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/SLEEPERAPIcsv"
 
-# config
-URL_PASSING = "https://www.espn.com/nfl/stats/player/_/stat/passing"
+CSV_DATA = {
+    "QB Passing": pd.read_csv(QB_URL),
+    "RB Rushing": pd.read_csv(RUSH_URL),
+    "WR Receiving": pd.read_csv(RECV_URL),
+}
 
-# helpers
-def build_driver(headless=True):
-    opts = Options()
-    if headless:
-        opts.add_argument("--headless=new")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--window-size=1400,1000")
-    opts.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+FANTASY_RAW = pd.read_csv(FANTASY_URL)
+
+def get_owner_label(row):
+    return (
+        row.get("owner") or row.get("display_name") or row.get("Owner") or
+        row.get("team_name") or row.get("team")
     )
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
 
-def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_clicks=100):
-    """
-    Click ESPN's 'Show More' link until it disappears or row count stops increasing.
-    """
-    left_rows_css = ".Table--fixed-left tbody tr.Table__TR[data-idx]"
+def expand_fantasy(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col in ["starters", "players", "bench"]:
+        if col in df.columns:
+            df[col] = df[col].apply(
+                lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("[") else x
+            )
 
-    def row_count():
-        return len(table_container.find_elements(By.CSS_SELECTOR, left_rows_css))
+    rows = []
+    for _, row in df.iterrows():
+        owner = get_owner_label(row)
+        starters = row.get("starters", []) or []
+        all_players = row.get("players", []) or []
+        bench_from_col = row.get("bench", None)
+        if bench_from_col is not None and isinstance(bench_from_col, list):
+            bench = bench_from_col
+        else:
+            bench = [p for p in all_players if p not in starters]
 
-    def find_show_more():
-        # Check inside table first
-        local = table_container.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
-        if local:
-            return next((x for x in local if x.is_displayed() and x.is_enabled()), None)
-        # Fallback: global page-level link
-        page = driver.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
-        return next((x for x in page if x.is_displayed() and x.is_enabled()), None)
+        for p in starters:
+            r = row.to_dict()
+            r["OwnerLabel"] = owner
+            r["player"] = p
+            r["slot"] = "Starter"
+            rows.append(r)
 
-    clicks = 0
-    prev = row_count()
+        for p in bench:
+            r = row.to_dict()
+            r["OwnerLabel"] = owner
+            r["player"] = p
+            r["slot"] = "Bench"
+            rows.append(r)
 
-    while clicks < max_clicks:
-        link = find_show_more()
-        if not link:
-            break
+    if not rows:
+        return pd.DataFrame()
 
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", link)
+    out = pd.DataFrame(rows)
+    keep_cols = [c for c in ["OwnerLabel", "player", "slot", "wins", "losses", "points_for", "points_against", "streak", "seed"] if c in out.columns]
+    base_cols = [c for c in ["OwnerLabel", "player", "slot"] if c in out.columns]
+    keep_cols = list(dict.fromkeys(base_cols + keep_cols))
+
+    return out[keep_cols] if keep_cols else out
+
+def fantasy_rosters_pivot(df):
+    owners = df.groupby("OwnerLabel")
+    rows = []
+    for owner, g in owners:
+        starters = g[g["slot"] == "Starter"]["player"].tolist()
+        bench = g[g["slot"] == "Bench"]["player"].tolist()
+        rows.append({
+            "Owner": owner,
+            "Starters": ", ".join(starters),
+            "Bench": ", ".join(bench)
+        })
+    return pd.DataFrame(rows)
+
+FANTASY_STANDINGS = FANTASY_RAW.copy()
+FANTASY_STANDINGS["OwnerLabel"] = FANTASY_STANDINGS.apply(get_owner_label, axis=1)
+standings_cols = [c for c in ["OwnerLabel","wins","losses","ties","points_for","points_against","streak","seed"] if c in FANTASY_STANDINGS.columns]
+if standings_cols:
+    FANTASY_STANDINGS = FANTASY_STANDINGS[standings_cols]
+if "wins" in FANTASY_STANDINGS.columns:
+    sort_cols = ["wins"]
+    ascending = [False]
+    if "points_for" in FANTASY_STANDINGS.columns:
+        sort_cols.append("points_for")
+        ascending.append(False)
+    FANTASY_STANDINGS = FANTASY_STANDINGS.sort_values(by=sort_cols, ascending=ascending)
+FANTASY_ROSTERS = expand_fantasy(FANTASY_RAW)
+
+TEAMS = ["All"] + sorted([
+    "BUF","MIA","NYJ","NE","BAL","CIN","PIT","CLE","TEN","IND","JAX","HOU",
+    "KC","LAC","LV","DEN","PHI","DAL","NYG","WAS","GB","MIN","DET","CHI",
+    "TB","NO","ATL","CAR","SF","SEA","LAR","ARI"
+])
+
+app_ui = ui.page_navbar(
+    ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
+    ui.nav_panel("Interactive Chart", ui.output_plot("stat_plot")),
+    ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
+    ui.nav_panel("Fantasy Standings", ui.output_data_frame("fantasy_standings_table")),
+    ui.nav_panel("Fantasy Rosters", ui.output_data_frame("fantasy_rosters_table")),
+    ui.nav_panel("Top Fantasy Points", ui.output_plot("fantasy_points_plot")),
+    title="🏈 ESPN NFL Player Stats Dashboard",
+    sidebar=ui.sidebar(
+        ui.input_select("stat_type", "Select Stat Type:", ["QB Passing","RB Rushing","WR Receiving"]),
+        ui.input_select("team_select", "Filter by Team:", TEAMS),
+        ui.input_text("player_search", "Search Player:"),
+        ui.input_select("player1", "Compare Player 1:", []),
+        ui.input_select("player2", "Compare Player 2:", []),
+        ui.input_action_button("refresh", "🔄 Refresh Data")
+    ),
+    selected="Data Table"
+)
+
+def server(input, output, session):
+
+    @reactive.Calc
+    @reactive.event(input.refresh, input.stat_type)
+    def df_raw():
+        return CSV_DATA[input.stat_type()].copy()
+
+    @reactive.effect
+    def _populate_players():
+        df = df_raw()
+        players = sorted(df["Name"].dropna().unique()) if "Name" in df else []
+        ui.update_select("player1", choices=players)
+        ui.update_select("player2", choices=players)
+
+    @reactive.Calc
+    def df_filtered():
+        df = df_raw().copy()
+
+        if input.team_select() != "All" and "Team" in df:
+            df = df[df["Team"] == input.team_select()]
+        if input.player_search() and "Name" in df:
+            df = df[df["Name"].str.contains(input.player_search(), case=False)]
+
+        numeric_cols = ["YDS", "TD", "REC", "RushYds", "RushTD", "RecYds", "RecTD"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = (
+                    df[col]
+                    .astype(str)
+                    .str.replace(",", "", regex=False)
+                    .astype(float)
+                )
+
+        def num_col(name, default=0.0):
+            if name in df.columns:
+                return pd.to_numeric(df[name], errors="coerce").fillna(0.0)
+            return pd.Series(default, index=df.index, dtype=float)
+
+        df["FantasyPoints"] = 0.0
+
+        if input.stat_type() == "QB Passing":
+            pass_yds = num_col("YDS")
+            pass_td  = num_col("TD")
+            rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
+            rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
+
+            df["FantasyPoints"] = (
+                pass_yds / 25.0
+                + pass_td * 4.0
+                + rush_yds / 10.0
+                + rush_td * 6.0
+            ).round(2)
+
+        elif input.stat_type() == "RB Rushing":
+            rush_rec_yds = num_col("YDS")
+            rush_rec_td  = num_col("TD")
+            rush_rec_yds += num_col("RecYds")
+            rush_rec_td  += num_col("RecTD")
+
+            df["FantasyPoints"] = (
+                rush_rec_yds / 10.0
+                + rush_rec_td * 6.0
+            ).round(2)
+
+        else:
+            rec_yds = num_col("YDS")
+            rec_td  = num_col("TD")
+            recs    = num_col("REC")
+            df["FantasyPoints"] = (
+                rec_yds / 10.0
+                + rec_td * 6.0
+                + recs * 1.0
+            ).round(2)
+
+        return df
+
+    @output
+    @render.data_frame
+    def player_table():
+        return df_filtered()
+
+    @output
+    @render.plot
+    def stat_plot():
+        df = df_filtered()
+        if df.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "No data to display.", ha="center", va="center", fontsize=12)
+            ax.axis("off")
+            return fig
+
+        x_stat, y_stat = "YDS", "TD"
+        title = f"{input.stat_type()}: Yards vs Touchdowns"
+
+        fig, ax = plt.subplots()
+        scatter = ax.scatter(df[x_stat], df[y_stat], picker=True)
+
+        ax.set_xlabel(x_stat)
+        ax.set_ylabel(y_stat)
+        ax.set_title(title)
+
+        cursor = mplcursors.cursor(scatter, hover=True)
+        cursor.connect("add", lambda sel: sel.annotation.set_text(df.iloc[sel.target.index]["Name"]))
+
         try:
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")))
-            link.click()
+            top = df.sort_values(by=y_stat, ascending=False).head(3)
+            for _, row in top.iterrows():
+                ax.annotate(row["Name"], (row[x_stat], row[y_stat]),
+                            textcoords="offset points", xytext=(5, 5), fontsize=8)
         except Exception:
-            driver.execute_script("arguments[0].click();", link)
-
-        time.sleep(pause)
-
-        new = row_count()
-        if new <= prev:
-            time.sleep(0.7)
-            new = row_count()
-            if new <= prev:
-                break
-        prev = new
-        clicks += 1
-
-# PASSING scraper
-def scrape_espn_passing_with_selenium(headless=True):
-    driver = build_driver(headless=headless)
-    wait = WebDriverWait(driver, 20)
-
-    try:
-        driver.get(URL_PASSING)
-
-        # Wait for ResponsiveTables
-        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.ResponsiveTable")))
-        tables = driver.find_elements(By.CSS_SELECTOR, "div.ResponsiveTable")
-
-        # Find the passing stats block
-        passing_block = None
-        for block in tables:
-            link = block.find_elements(By.CSS_SELECTOR, 'thead a[href*="/stat/passing/"]')
-            if link:
-                passing_block = block
-                break
-
-        if passing_block is None:
-            raise RuntimeError("Couldn't find the passing stats table on the page.")
-
-        # Click "Show More" until all rows are loaded
-        click_show_more_until_done(driver, passing_block, wait)
-
-        # LEFT: rank + name + team
-        player_summary = {}
-        for row in passing_block.find_elements(By.CSS_SELECTOR, ".Table--fixed-left tbody tr.Table__TR"):
-            idx = row.get_attribute("data-idx")
-            if not idx:
-                continue
-
-            tds = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
-            rk = tds[0].text.strip() if tds else ""
-
-            try:
-                name = row.find_element(By.CSS_SELECTOR, "a.AnchorLink").text.strip()
-            except:
-                name = ""
-
-            try:
-                team = row.find_element(By.CSS_SELECTOR, ".athleteCell__teamAbbrev").text.strip()
-            except:
-                team = ""
-
-            player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
-
-        # RIGHT: headers + stat rows
-        stat_headers = [th.text.strip() for th in passing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller thead th")]
-        header_positions = {h: i for i, h in enumerate(stat_headers)}
-
-        desired_columns = ["POS","GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG","TD","INT","SACK","SYL","QBR","RTG"]
-
-        player_stats = {}
-        for row in passing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller tbody tr.Table__TR"):
-            idx = row.get_attribute("data-idx")
-            if not idx:
-                continue
-            cells = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
-            texts = [c.text.strip() for c in cells]
-
-            line = {}
-            for h in desired_columns:
-                pos = header_positions.get(h, None)
-                line[h] = texts[pos] if (pos is not None and pos < len(texts)) else ""
-            player_stats[idx] = line
-
-        # MERGE + DataFrame
-        rows = []
-        for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
-            rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
-
-        order = ["RK","Name","Team"] + desired_columns
-        df_passing = pd.DataFrame(rows)
-        df_passing = df_passing[[c for c in order if c in df_passing.columns]]
-
-        # Save & preview
-        pd.set_option('display.max_rows', None)
-        pd.set_option('display.max_columns', None)
-        df_passing.to_csv("espn_passing.csv", index=False)
-        print(df_passing)
-        print("\nSaved to espn_passing.csv")
-
-        return df_passing
-
-    finally:
-        driver.quit()
-
-# GitHub upload helper
-def upload_csv_to_github(
-    csv_path,
-    repo="masonrmutz/INFO-4700-002",
-    github_path="QBSTATScsv",
-    branch="main"
-):
-    """
-    Uploads/overwrites a file in a GitHub repo using the Contents API.
-    Uses a personal access token embedded directly in the code.
-    """
-    token = "*****" 
-
-    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
-        raise RuntimeError("You must set your GitHub token in the script.")
-
-    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-
-    # Read CSV and base64-encode
-    with open(csv_path, "rb") as f:
-        content = f.read()
-    b64_content = base64.b64encode(content).decode("utf-8")
-
-    # Get current file SHA
-    sha = None
-    r = requests.get(url, headers=headers)
-    if r.status_code == 200:
-        sha = r.json().get("sha")
-    elif r.status_code != 404:
-        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
-
-    payload = {
-        "message": "Update ESPN QB passing stats",
-        "content": b64_content,
-        "branch": branch,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    r = requests.put(url, headers=headers, json=payload)
-    if not r.ok:
-        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
-
-    data = r.json()
-    html_url = data.get("content", {}).get("html_url", url)
-    print(f"Uploaded to GitHub: {html_url}")
-
-# --- run ---
-if __name__ == "__main__":
-    df = scrape_espn_passing_with_selenium(headless=True)
-    upload_csv_to_github("espn_passing.csv")
-
-#__________________________________
-import time
-import pandas as pd
-import base64 
-import requests 
-
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-
-URL = "https://www.espn.com/nfl/stats/player/_/stat/rushing"
-
-def build_driver(headless=True):
-    opts = Options()
-    if headless:
-        opts.add_argument("--headless=new")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--window-size=1400,1000")
-    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/124.0.0.0 Safari/537.36")
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
-
-def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_clicks=100):
-    """
-    Click ESPN's 'Show More' link until it disappears or row count stops increasing.
-    """
-    left_rows_css = ".Table--fixed-left tbody tr.Table__TR[data-idx]"
-
-    def row_count():
-        return len(table_container.find_elements(By.CSS_SELECTOR, left_rows_css))
-
-    def find_show_more():
-        # Check inside table first
-        local = table_container.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
-        if local:
-            return next((x for x in local if x.is_displayed() and x.is_enabled()), None)
-        # Fallback: global page-level link
-        page = driver.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
-        return next((x for x in page if x.is_displayed() and x.is_enabled()), None)
-
-    clicks = 0
-    prev = row_count()
-
-    while clicks < max_clicks:
-        link = find_show_more()
-        if not link:
-            break
-
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", link)
-        try:
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")))
-            link.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", link)
-
-        time.sleep(pause)
-
-        new = row_count()
-        if new <= prev:
-            time.sleep(0.7)
-            new = row_count()
-            if new <= prev:
-                break
-        prev = new
-        clicks += 1
-
-def scrape_espn_rushing_with_selenium(headless=True):
-    driver = build_driver(headless=headless)
-    wait = WebDriverWait(driver, 20)
-
-    try:
-        driver.get(URL)
-
-        # Wait for ResponsiveTables
-        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.ResponsiveTable")))
-        tables = driver.find_elements(By.CSS_SELECTOR, "div.ResponsiveTable")
-
-        rushing_block = None
-        for block in tables:
-            link = block.find_elements(By.CSS_SELECTOR, 'thead a[href*="/stat/rushing/"]')
-            if link:
-                rushing_block = block
-                break
-
-        if rushing_block is None:
-            raise RuntimeError("Couldn't find the rushing stats table on the page.")
-
-        # Click "Show More" until all rows are loaded
-        click_show_more_until_done(driver, rushing_block, wait)
-
-        # LEFT: rank + name + team
-        player_summary = {}
-        for row in rushing_block.find_elements(By.CSS_SELECTOR, ".Table--fixed-left tbody tr.Table__TR"):
-            idx = row.get_attribute("data-idx")
-            if not idx:
-                continue
-
-            tds = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
-            rk = tds[0].text.strip() if tds else ""
-
-            try:
-                name = row.find_element(By.CSS_SELECTOR, "a.AnchorLink").text.strip()
-            except:
-                name = ""
-
-            try:
-                team = row.find_element(By.CSS_SELECTOR, ".athleteCell__teamAbbrev").text.strip()
-            except:
-                team = ""
-
-            player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
-
-        # RIGHT: headers + stat rows
-        stat_headers = [th.text.strip() for th in rushing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller thead th")]
-        header_positions = {h: i for i, h in enumerate(stat_headers)}
-
-        desired_columns = ["POS","GP","ATT","YDS","AVG","LNG","BIG","TD","YDS/G","FUM","LST","FD"]
-
-        player_stats = {}
-        for row in rushing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller tbody tr.Table__TR"):
-            idx = row.get_attribute("data-idx")
-            if not idx:
-                continue
-            cells = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
-            texts = [c.text.strip() for c in cells]
-
-            line = {}
-            for h in desired_columns:
-                pos = header_positions.get(h, None)
-                line[h] = texts[pos] if (pos is not None and pos < len(texts)) else ""
-            player_stats[idx] = line
-
-        # MERGE + DataFrame 
-        rows = []
-        for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
-            rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
-
-        order = ["RK","Name","Team"] + desired_columns
-        df_rushing = pd.DataFrame(rows)
-        df_rushing = df_rushing[[c for c in order if c in df_rushing.columns]]
-
-        # Save & preview
-        pd.set_option('display.max_rows', None)
-        pd.set_option('display.max_columns', None)
-        df_rushing.to_csv("espn_rushing.csv", index=False)
-        print(df_rushing)
-        print("\nSaved to espn_rushing.csv")
-
-        return df_rushing
-
-    finally:
-        driver.quit()
-
-# GitHub upload helper
-def upload_csv_to_github(
-    csv_path,
-    repo="masonrmutz/INFO-4700-002",
-    github_path="RUSHSTATScsv",
-    branch="main"
-):
-    """
-    Uploads/overwrites a file in a GitHub repo using the Contents API.
-    Uses a personal access token embedded directly in the code.
-    """
-    token = "******" 
-
-    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
-        raise RuntimeError("You must set your GitHub token in the script.")
-
-    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-
-    # Read CSV and base64-encode
-    with open(csv_path, "rb") as f:
-        content = f.read()
-    b64_content = base64.b64encode(content).decode("utf-8")
-
-    # Get current file SHA 
-    sha = None
-    r = requests.get(url, headers=headers)
-    if r.status_code == 200:
-        sha = r.json().get("sha")
-    elif r.status_code != 404:
-        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
-
-    payload = {
-        "message": "Update ESPN rushing stats",
-        "content": b64_content,
-        "branch": branch,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    r = requests.put(url, headers=headers, json=payload)
-    if not r.ok:
-        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
-
-    data = r.json()
-    html_url = data.get("content", {}).get("html_url", url)
-    print(f"Uploaded to GitHub: {html_url}")
-
-if __name__ == "__main__":
-    df = scrape_espn_rushing_with_selenium(headless=True)
-    upload_csv_to_github("espn_rushing.csv")
-#___________________________________________
-import time
-import pandas as pd
-import base64
-import requests
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
-URL_RECEIVING = "https://www.espn.com/nfl/stats/player/_/stat/receiving"
-
-def scrape_espn_receiving_with_selenium(headless=True):
-    driver = build_driver(headless=headless)
-    wait = WebDriverWait(driver, 20)
-
-    try:
-        driver.get(URL_RECEIVING)
-
-        # Wait for ResponsiveTables
-        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.ResponsiveTable")))
-        tables = driver.find_elements(By.CSS_SELECTOR, "div.ResponsiveTable")
-
-        # Find the receiving stats block
-        receiving_block = None
-        for block in tables:
-            link = block.find_elements(By.CSS_SELECTOR, 'thead a[href*="/stat/receiving/"]')
-            if link:
-                receiving_block = block
-                break
-
-        if receiving_block is None:
-            raise RuntimeError("Couldn't find the receiving stats table on the page.")
-
-        # Click "Show More" until all rows are loaded
-        click_show_more_until_done(driver, receiving_block, wait)
-
-        #LEFT: rank + name + team
-        player_summary = {}
-        for row in receiving_block.find_elements(By.CSS_SELECTOR, ".Table--fixed-left tbody tr.Table__TR"):
-            idx = row.get_attribute("data-idx")
-            if not idx:
-                continue
-
-            tds = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
-            rk = tds[0].text.strip() if tds else ""
-
-            try:
-                name = row.find_element(By.CSS_SELECTOR, "a.AnchorLink").text.strip()
-            except:
-                name = ""
-
-            try:
-                team = row.find_element(By.CSS_SELECTOR, ".athleteCell__teamAbbrev").text.strip()
-            except:
-                team = ""
-
-            player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
-
-        # RIGHT: headers + stat rows
-        stat_headers = [th.text.strip() for th in receiving_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller thead th")]
-        header_positions = {h: i for i, h in enumerate(stat_headers)}
-
-        # ESPN receiving stat columns
-        desired_columns = [
-            "POS","GP","REC","TGTS","YDS","AVG","YDS/G","LNG","TD","20+","40+",
-            "FUM","LST","FD","YAC","DROP","CTCH%"
-        ]
-
-        player_stats = {}
-        for row in receiving_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller tbody tr.Table__TR"):
-            idx = row.get_attribute("data-idx")
-            if not idx:
-                continue
-            cells = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
-            texts = [c.text.strip() for c in cells]
-
-            line = {}
-            for h in desired_columns:
-                pos = header_positions.get(h, None)
-                line[h] = texts[pos] if (pos is not None and pos < len(texts)) else ""
-            player_stats[idx] = line
-
-        # MERGE + DataFrame
-        rows = []
-        for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
-            rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
-
-        order = ["RK","Name","Team"] + desired_columns
-        df_receiving = pd.DataFrame(rows)
-        df_receiving = df_receiving[[c for c in order if c in df_receiving.columns]]
-
-        # Save & preview
-        pd.set_option('display.max_rows', None)
-        pd.set_option('display.max_columns', None)
-        df_receiving.to_csv("espn_receiving.csv", index=False)
-        print(df_receiving)
-        print("\nSaved to espn_receiving.csv")
-
-        return df_receiving
-
-    finally:
-        driver.quit()
-
-# GitHub upload helper
-def upload_csv_to_github(
-    csv_path,
-    repo="masonrmutz/INFO-4700-002",
-    github_path="CATCHSTATScsv",
-    branch="main"
-):
-    """
-    Uploads/overwrites a file in a GitHub repo using the Contents API.
-    Uses a personal access token embedded directly in the code.
-    """
-    token = "***" 
-
-    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
-        raise RuntimeError("You must set your GitHub token in the script.")
-
-    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-
-    # Read CSV and base64-encode
-    with open(csv_path, "rb") as f:
-        content = f.read()
-    b64_content = base64.b64encode(content).decode("utf-8")
-
-    # Get current file SHA (needed for update)
-    sha = None
-    r = requests.get(url, headers=headers)
-    if r.status_code == 200:
-        sha = r.json().get("sha")
-    elif r.status_code != 404:
-        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
-
-    payload = {
-        "message": "Update ESPN receiving stats",
-        "content": b64_content,
-        "branch": branch,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    r = requests.put(url, headers=headers, json=payload)
-    if not r.ok:
-        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
-
-    data = r.json()
-    html_url = data.get("content", {}).get("html_url", url)
-    print(f"Uploaded to GitHub: {html_url}")
-
-if __name__ == "__main__":
-    df = scrape_espn_receiving_with_selenium(headless=True)
-    upload_csv_to_github("espn_receiving.csv")
-#_______________________________________________________
-import requests
-import pandas as pd
-
-league_id = "1180222056477925376"
-
-league = requests.get(f"https://api.sleeper.app/v1/league/{league_id}").json()
-users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users").json()
-rosters = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/rosters").json()
-players = requests.get("https://api.sleeper.app/v1/players/nfl").json()
-
-user_map = {u["user_id"]: u["display_name"] for u in users}
-
-combined_data = []
-for roster in rosters:
-    owner_name = user_map.get(roster.get("owner_id"), "Unknown")
-    player_ids = roster.get("players", [])
-    starter_ids = roster.get("starters", [])
-
-    starters = [players[p].get("full_name", "Unknown Player") for p in starter_ids if p in players]
-    bench = [players[p].get("full_name", "Unknown Player") for p in player_ids if p not in starter_ids and p in players]
-
-    combined_data.append({
-        "owner": owner_name,
-        "starters": starters,
-        "bench": bench,
-        "wins": roster.get("settings", {}).get("wins", 0),
-        "losses": roster.get("settings", {}).get("losses", 0),
-        "points": roster.get("settings", {}).get("fpts", 0),
-    })
-
-df = pd.DataFrame(combined_data)
-print(df)
-#________________________________________________
-import requests
-import pandas as pd
-import base64  # NEW
-
-league_id = "1180222056477925376"
-
-league = requests.get(f"https://api.sleeper.app/v1/league/{league_id}").json()
-users = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/users").json()
-rosters = requests.get(f"https://api.sleeper.app/v1/league/{league_id}/rosters").json()
-players = requests.get("https://api.sleeper.app/v1/players/nfl").json()
-
-user_map = {u["user_id"]: u["display_name"] for u in users}
-
-combined_data = []
-for roster in rosters:
-    owner_name = user_map.get(roster.get("owner_id"), "Unknown")
-    player_ids = roster.get("players", [])
-    starter_ids = roster.get("starters", [])
-
-    starters = [players[p].get("full_name", "Unknown Player") for p in starter_ids if p in players]
-    bench = [players[p].get("full_name", "Unknown Player") for p in player_ids if p not in starter_ids and p in players]
-
-    combined_data.append({
-        "owner": owner_name,
-        "starters": starters,
-        "bench": bench,
-        "wins": roster.get("settings", {}).get("wins", 0),
-        "losses": roster.get("settings", {}).get("losses", 0),
-        "points": roster.get("settings", {}).get("fpts", 0),
-    })
-
-df = pd.DataFrame(combined_data)
-print(df)
-
-# Save to CSV
-df.to_csv("sleeper_league.csv", index=False)
-print("\nSaved to sleeper_league.csv")
-
-# --- GitHub upload helper (same pattern as the ESPN scripts) ---
-def upload_csv_to_github(
-    csv_path,
-    repo="masonrmutz/INFO-4700-002",
-    github_path="SLEEPERAPIcsv",
-    branch="main"
-):
-    """
-    Uploads/overwrites a file in a GitHub repo using the Contents API.
-    Uses a personal access token embedded directly in the code.
-    """
-    token = "***"
-
-    if not token or "YOUR_GITHUB_TOKEN_HERE" in token:
-        raise RuntimeError("You must set your GitHub token in the script.")
-
-    url = f"https://api.github.com/repos/{repo}/contents/{github_path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-
-    # Read CSV and base64-encode
-    with open(csv_path, "rb") as f:
-        content = f.read()
-    b64_content = base64.b64encode(content).decode("utf-8")
-
-    # Get current file SHA (needed for update)
-    sha = None
-    r = requests.get(url, headers=headers)
-    if r.status_code == 200:
-        sha = r.json().get("sha")
-    elif r.status_code != 404:
-        raise RuntimeError(f"Error checking existing file: {r.status_code} {r.text}")
-
-    payload = {
-        "message": "Update Sleeper league data",
-        "content": b64_content,
-        "branch": branch,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    r = requests.put(url, headers=headers, json=payload)
-    if not r.ok:
-        raise RuntimeError(f"Error uploading file: {r.status_code} {r.text}")
-
-    data = r.json()
-    html_url = data.get("content", {}).get("html_url", url)
-    print(f"Uploaded to GitHub: {html_url}")
-
-# actually upload
-upload_csv_to_github("sleeper_league.csv")
+            pass
+
+        fig.tight_layout()
+        return fig
+
+    @output
+    @render.data_frame
+    def comparison_table():
+        df = df_filtered()
+        p1 = input.player1()
+        p2 = input.player2()
+        if not p1 or not p2:
+            return pd.DataFrame()
+        return pd.concat([df[df["Name"]==p1], df[df["Name"]==p2]])
+
+    @reactive.Calc
+    def df_fantasy_standings():
+        df = FANTASY_STANDINGS.copy()
+        if input.player_search() and "OwnerLabel" in df.columns:
+            df = df[df["OwnerLabel"].str.contains(input.player_search(), case=False)]
+        return df
+
+    @output
+    @render.data_frame
+    def fantasy_standings_table():
+        return df_fantasy_standings()
+
+    @reactive.Calc
+    def df_fantasy_rosters():
+        df = FANTASY_ROSTERS.copy()
+        if input.player_search() and "player" in df.columns:
+            df = df[df["player"].str.contains(input.player_search(), case=False)]
+        return fantasy_rosters_pivot(df)
+
+    @output
+    @render.data_frame
+    def fantasy_rosters_table():
+        return df_fantasy_rosters()
+
+    @output
+    @render.plot
+    def fantasy_points_plot():
+        df = df_filtered()
+        if df.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "No data to display.", ha="center", va="center", fontsize=12)
+            ax.axis("off")
+            return fig
+
+        df_top = df.sort_values(by="FantasyPoints", ascending=False).head(20)
+
+        fig, ax = plt.subplots(figsize=(6, 8))
+
+        y_pos = range(len(df_top)-1, -1, -1)
+
+        ax.scatter(df_top["FantasyPoints"], y_pos, s=100)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(df_top["Name"])
+        ax.set_xlabel("Fantasy Points")
+        ax.set_ylabel("Player")
+        ax.set_title(f"Top 20 {input.stat_type()} Fantasy Point Getters")
+
+        for i, row in zip(y_pos, df_top.itertuples()):
+            ax.text(row.FantasyPoints + 0.5, i, f"{row.FantasyPoints:.1f}", va="center", fontsize=8)
+
+        fig.tight_layout()
+        return fig
+
+app = App(app_ui, server)
