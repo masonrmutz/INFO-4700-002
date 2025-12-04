@@ -231,7 +231,7 @@ def server(input, output, session):
             ).fillna(0).round(3)
 
         elif input.stat_type() == "WR Receiving":
-            targets = num_col("TGT")
+            targets = num_col("TGTS")
             df["FantasyPointsPerTarget"] = (
             df["FantasyPoints"] / targets.replace(0, pd.NA)
             ).fillna(0).round(3)
