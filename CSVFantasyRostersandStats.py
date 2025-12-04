@@ -1,34 +1,22 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import ast
-import mplcursors  # For hover tooltips
+import mplcursors
 from shiny import App, ui, render, reactive
 
-# -------------------------
-# RAW GITHUB CSV URLs
-# -------------------------
 QB_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/QBSTATScsv"
 RUSH_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/RUSHSTATScsv"
 RECV_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/CATCHSTATScsv"
 FANTASY_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/SLEEPERAPIcsv"
 
-# -------------------------
-# LOAD MAIN STAT CSVs
-# -------------------------
 CSV_DATA = {
     "QB Passing": pd.read_csv(QB_URL),
     "RB Rushing": pd.read_csv(RUSH_URL),
     "WR Receiving": pd.read_csv(RECV_URL),
 }
 
-# -------------------------
-# LOAD FANTASY CSV
-# -------------------------
 FANTASY_RAW = pd.read_csv(FANTASY_URL)
 
-# -------------------------
-# HELPER FUNCTIONS
-# -------------------------
 def get_owner_label(row):
     return (
         row.get("owner") or row.get("display_name") or row.get("Owner") or
@@ -91,9 +79,6 @@ def fantasy_rosters_pivot(df):
         })
     return pd.DataFrame(rows)
 
-# -------------------------
-# BUILD FANTASY DATA
-# -------------------------
 FANTASY_STANDINGS = FANTASY_RAW.copy()
 FANTASY_STANDINGS["OwnerLabel"] = FANTASY_STANDINGS.apply(get_owner_label, axis=1)
 standings_cols = [c for c in ["OwnerLabel","wins","losses","ties","points_for","points_against","streak","seed"] if c in FANTASY_STANDINGS.columns]
@@ -108,25 +93,19 @@ if "wins" in FANTASY_STANDINGS.columns:
     FANTASY_STANDINGS = FANTASY_STANDINGS.sort_values(by=sort_cols, ascending=ascending)
 FANTASY_ROSTERS = expand_fantasy(FANTASY_RAW)
 
-# -------------------------
-# TEAMS LIST
-# -------------------------
 TEAMS = ["All"] + sorted([
     "BUF","MIA","NYJ","NE","BAL","CIN","PIT","CLE","TEN","IND","JAX","HOU",
     "KC","LAC","LV","DEN","PHI","DAL","NYG","WAS","GB","MIN","DET","CHI",
     "TB","NO","ATL","CAR","SF","SEA","LAR","ARI"
 ])
 
-# -------------------------
-# UI
-# -------------------------
 app_ui = ui.page_navbar(
     ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
     ui.nav_panel("Interactive Chart", ui.output_plot("stat_plot")),
     ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
     ui.nav_panel("Fantasy Standings", ui.output_data_frame("fantasy_standings_table")),
     ui.nav_panel("Fantasy Rosters", ui.output_data_frame("fantasy_rosters_table")),
-    ui.nav_panel("Top Fantasy Points", ui.output_plot("fantasy_points_plot")),  # New Tab
+    ui.nav_panel("Top Fantasy Points", ui.output_plot("fantasy_points_plot")),
     title="🏈 ESPN NFL Player Stats Dashboard",
     sidebar=ui.sidebar(
         ui.input_select("stat_type", "Select Stat Type:", ["QB Passing","RB Rushing","WR Receiving"]),
@@ -139,9 +118,6 @@ app_ui = ui.page_navbar(
     selected="Data Table"
 )
 
-# -------------------------
-# SERVER
-# -------------------------
 def server(input, output, session):
 
     @reactive.Calc
@@ -160,13 +136,11 @@ def server(input, output, session):
     def df_filtered():
         df = df_raw().copy()
 
-        # --- Filters ---
         if input.team_select() != "All" and "Team" in df:
             df = df[df["Team"] == input.team_select()]
         if input.player_search() and "Name" in df:
             df = df[df["Name"].str.contains(input.player_search(), case=False)]
 
-        # --- Clean numeric columns (commas, strings) ---
         numeric_cols = ["YDS", "TD", "REC", "RushYds", "RushTD", "RecYds", "RecTD"]
         for col in numeric_cols:
             if col in df.columns:
@@ -177,74 +151,54 @@ def server(input, output, session):
                     .astype(float)
                 )
 
-        # Helper to safely pull numeric series or 0 if column missing
         def num_col(name, default=0.0):
             if name in df.columns:
                 return pd.to_numeric(df[name], errors="coerce").fillna(0.0)
             return pd.Series(default, index=df.index, dtype=float)
 
-        # --- Initialize FantasyPoints ---
-df["FantasyPoints"] = 0.0
+        df["FantasyPoints"] = 0.0
 
-# --- QB SCORING ---
-if input.stat_type() == "QB Passing":
-    pass_yds = num_col("YDS")
-    pass_td  = num_col("TD")
-    rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
-    rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
+        if input.stat_type() == "QB Passing":
+            pass_yds = num_col("YDS")
+            pass_td  = num_col("TD")
+            rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
+            rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
 
-    df["FantasyPoints"] = (
-        pass_yds / 25.0
-        + pass_td * 4.0
-        + rush_yds / 10.0
-        + rush_td * 6.0
-    ).round(2)
+            df["FantasyPoints"] = (
+                pass_yds / 25.0
+                + pass_td * 4.0
+                + rush_yds / 10.0
+                + rush_td * 6.0
+            ).round(2)
 
-# --- RB SCORING ---
-elif input.stat_type() == "RB Rushing":
-    rush_rec_yds = num_col("YDS")
-    rush_rec_td  = num_col("TD")
-    rush_rec_yds += num_col("RecYds")
-    rush_rec_td  += num_col("RecTD")
+        elif input.stat_type() == "RB Rushing":
+            rush_rec_yds = num_col("YDS")
+            rush_rec_td  = num_col("TD")
+            rush_rec_yds += num_col("RecYds")
+            rush_rec_td  += num_col("RecTD")
 
-    df["FantasyPoints"] = (
-        rush_rec_yds / 10.0
-        + rush_rec_td * 6.0
-    ).round(2)
+            df["FantasyPoints"] = (
+                rush_rec_yds / 10.0
+                + rush_rec_td * 6.0
+            ).round(2)
 
-# --- WR SCORING ---
-else:
-    rec_yds = num_col("YDS")
-    rec_td  = num_col("TD")
-    recs    = num_col("REC")
-    df["FantasyPoints"] = (
-        rec_yds / 10.0
-        + rec_td * 6.0
-        + recs * 1.0
-    ).round(2)
+        else:
+            rec_yds = num_col("YDS")
+            rec_td  = num_col("TD")
+            recs    = num_col("REC")
+            df["FantasyPoints"] = (
+                rec_yds / 10.0
+                + rec_td * 6.0
+                + recs * 1.0
+            ).round(2)
 
-# --- Fantasy Points Per Game (FPPG) ---
-games = None
-for gcol in ["G", "Games", "GP", "games_played"]:
-    if gcol in df.columns:
-        games = num_col(gcol)
-        break
+        return df
 
-if games is not None:
-    df["FantasyPointsPerGame"] = (df["FantasyPoints"] / games).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-else:
-    df["FantasyPointsPerGame"] = 0.0
-
-return df
-
-
-    # ---- Player Table ----
     @output
     @render.data_frame
     def player_table():
         return df_filtered()
 
-    # ---- Interactive Chart (existing) ----
     @output
     @render.plot
     def stat_plot():
@@ -279,7 +233,6 @@ return df
         fig.tight_layout()
         return fig
 
-    # ---- Player Comparison ----
     @output
     @render.data_frame
     def comparison_table():
@@ -290,7 +243,6 @@ return df
             return pd.DataFrame()
         return pd.concat([df[df["Name"]==p1], df[df["Name"]==p2]])
 
-    # ---- Fantasy Standings ----
     @reactive.Calc
     def df_fantasy_standings():
         df = FANTASY_STANDINGS.copy()
@@ -303,7 +255,6 @@ return df
     def fantasy_standings_table():
         return df_fantasy_standings()
 
-    # ---- Fantasy Rosters ----
     @reactive.Calc
     def df_fantasy_rosters():
         df = FANTASY_ROSTERS.copy()
@@ -316,8 +267,6 @@ return df
     def fantasy_rosters_table():
         return df_fantasy_rosters()
 
-    # ---- Top Fantasy Points Plot (vertical) ----
-    # ---- Top Fantasy Points Plot (vertical, top player at top) ----
     @output
     @render.plot
     def fantasy_points_plot():
@@ -328,12 +277,10 @@ return df
             ax.axis("off")
             return fig
 
-        # Get top 20 players by FantasyPoints
         df_top = df.sort_values(by="FantasyPoints", ascending=False).head(20)
 
         fig, ax = plt.subplots(figsize=(6, 8))
 
-        # y positions reversed so highest fantasy points at the top
         y_pos = range(len(df_top)-1, -1, -1)
 
         ax.scatter(df_top["FantasyPoints"], y_pos, s=100)
@@ -343,15 +290,10 @@ return df
         ax.set_ylabel("Player")
         ax.set_title(f"Top 20 {input.stat_type()} Fantasy Point Getters")
 
-        # Add point labels
         for i, row in zip(y_pos, df_top.itertuples()):
             ax.text(row.FantasyPoints + 0.5, i, f"{row.FantasyPoints:.1f}", va="center", fontsize=8)
 
         fig.tight_layout()
         return fig
 
-
-# -------------------------
-# CREATE APP
-# -------------------------
 app = App(app_ui, server)
