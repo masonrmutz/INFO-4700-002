@@ -145,26 +145,24 @@ def server(input, output, session):
             return pd.Series(default, index=df.index, dtype=float)
 
         df["FantasyPoints"] = 0.0
+
         if input.stat_type() == "QB Passing":
             pass_yds = num_col("YDS")
             pass_td  = num_col("TD")
             rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
             rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
             df["FantasyPoints"] = (pass_yds/25 + pass_td*4 + rush_yds/10 + rush_td*6).round(2)
+
         elif input.stat_type() == "RB Rushing":
             rush_rec_yds = num_col("YDS") + num_col("RecYds")
             rush_rec_td  = num_col("TD") + num_col("RecTD")
             df["FantasyPoints"] = (rush_rec_yds/10 + rush_rec_td*6).round(2)
-        else:
+
+        else:  
             rec_yds = num_col("YDS")
             rec_td  = num_col("TD")
             recs    = num_col("REC")
             df["FantasyPoints"] = (rec_yds/10 + rec_td*6 + recs*1.0).round(2)
-        df["FantasyPoints"] = (
-                rec_yds / 10.0
-                + rec_td * 6.0
-                + recs * 1.0
-            ).round(2)
 
         # Fantasyt Points Per Game
         
