@@ -160,6 +160,56 @@ def server(input, output, session):
             rec_td  = num_col("TD")
             recs    = num_col("REC")
             df["FantasyPoints"] = (rec_yds/10 + rec_td*6 + recs*1.0).round(2)
+        df["FantasyPoints"] = (
+                rec_yds / 10.0
+                + rec_td * 6.0
+                + recs * 1.0
+            ).round(2)
+
+        # Fantasyt Points Per Game
+        
+        if "GP" in df.columns:
+            games = pd.to_numeric(df["GP"], errors="coerce").replace(0, pd.NA)
+        else:
+            games = pd.Series(1, index=df.index, dtype=float)
+
+        df["FantasyPointsPerGame"] = (
+        df["FantasyPoints"] / games
+        ).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+
+        # Tuddy Dependency
+        if input.stat_type() == "QB Passing":
+            td_points = num_col("TD") * 4.0 + num_col("RushTD") * 6.0
+
+        elif input.stat_type() == "RB Rushing":
+            td_points = (num_col("TD") + num_col("RecTD")) * 6.0
+
+        else:  # WR Receiving
+            td_points = num_col("TD") * 6.0
+
+        df["TDDependency"] = (
+        (td_points / df["FantasyPoints"]) * 100
+        ).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+
+        # Fantasy points per attempt, rush, or target
+        if input.stat_type() == "QB Passing":
+            attempts = num_col("ATT")
+            df["FantasyPointsPerAttempt"] = (
+                df["FantasyPoints"] / attempts.replace(0, pd.NA)
+                ).fillna(0).round(3)
+
+        elif input.stat_type() == "RB Rushing":
+            rush_attempts = num_col("ATT")
+            df["FantasyPointsPerRush"] = (
+            df["FantasyPoints"] / rush_attempts.replace(0, pd.NA)
+            ).fillna(0).round(3)
+
+        elif input.stat_type() == "WR Receiving":
+            targets = num_col("TGTS")
+            df["FantasyPointsPerTarget"] = (
+            df["FantasyPoints"] / targets.replace(0, pd.NA)
+            ).fillna(0).round(3)
+        
         return df
 
     @output
