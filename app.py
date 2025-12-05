@@ -1,246 +1,300 @@
-import requests
-from bs4 import BeautifulSoup
 import pandas as pd
-import time
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-from shiny import App, ui, reactive, render
+import matplotlib.pyplot as plt
+import ast
+import mplcursors
+from shiny import App, ui, render, reactive
 
-# =========================================================
-# Scraper: ESPN QB Passing (requests + BeautifulSoup)
-# =========================================================
-def scrape_qb_stats():
-    URL = "https://www.espn.com/nfl/stats/player/_/view/offense/table/passing"
-    HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-    }
+QB_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/QBSTATScsv"
+RUSH_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/RUSHSTATScsv"
+RECV_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/CATCHSTATScsv"
+FANTASY_URL = "https://raw.githubusercontent.com/masonrmutz/INFO-4700-002/main/SLEEPERAPIcsv"
 
-    resp = requests.get(URL, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
+CSV_DATA = {
+    "QB Passing": pd.read_csv(QB_URL),
+    "RB Rushing": pd.read_csv(RUSH_URL),
+    "WR Receiving": pd.read_csv(RECV_URL),
+}
 
-    # LEFT table (rank + name + team)
-    player_summary = {}
-    for player_info_row in soup.select(".Table--fixed-left tbody tr.Table__TR"):
-        row_index = player_info_row.get("data-idx")
-        if not row_index:
-            continue
-        player_cells = player_info_row.select("td.Table__TD")
-        rk = player_cells[0].get_text(strip=True) if player_cells else ""
-        player_name_tag = player_info_row.select_one("a.AnchorLink")
-        name = player_name_tag.get_text(strip=True) if player_name_tag else ""
-        team_node = player_info_row.select_one(".athleteCell__teamAbbrev")
-        team = team_node.get_text(strip=True) if team_node else ""
-        player_summary[row_index] = {"RK": rk, "Name": name, "Team": team}
+FANTASY_RAW = pd.read_csv(FANTASY_URL)
 
-    # RIGHT table (stats)
-    stat_headers = [th.get_text(strip=True) for th in soup.select(".Table__Scroller thead th")]
-    header_positions = {h: i for i, h in enumerate(stat_headers)}
+def get_owner_label(row):
+    return row.get("owner") or row.get("display_name") or row.get("Owner") or row.get("team_name") or row.get("team")
 
-    desired_columns = ["POS","GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG","TD",
-                       "INT","SACK","SYL","QBR","RTG"]
-
-    player_stats = {}
-    for stat_row in soup.select(".Table__Scroller tbody tr.Table__TR"):
-        row_index = stat_row.get("data-idx")
-        if not row_index:
-            continue
-        player_stats_cells = [td.get_text(strip=True) for td in stat_row.select("td.Table__TD")]
-        player_stat_line = {
-            h: (player_stats_cells[header_positions[h]] if h in header_positions and header_positions[h] < len(player_stats_cells) else "")
-            for h in desired_columns
-        }
-        player_stats[row_index] = player_stat_line
-
-    # Merge left + right
-    merged_player_records = []
-    for row_index in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
-        merged_player_record = {**player_summary.get(row_index, {}), **player_stats.get(row_index, {})}
-        merged_player_records.append(merged_player_record)
-
-    order = ["RK","Name","Team","POS","GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG",
-             "TD","INT","SACK","SYL","QBR","RTG"]
-    df = pd.DataFrame(merged_player_records)
-    df = df[[c for c in order if c in df.columns]]
-    
-    numeric_cols = ["GP","CMP","ATT","CMP%","YDS","AVG","YDS/G","LNG","TD","INT","SACK","SYL","QBR","RTG"]
-    for col in numeric_cols:
+def expand_fantasy(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col in ["starters", "players", "bench"]:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    
-    return df
+            df[col] = df[col].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("[") else x)
 
-# =========================================================
-# Scraper: ESPN RB Rushing (selenium)
-# =========================================================
-URL_RUSH = "https://www.espn.com/nfl/stats/player/_/stat/rushing"
+    rows = []
+    for _, row in df.iterrows():
+        owner = get_owner_label(row)
+        starters = row.get("starters", []) or []
+        all_players = row.get("players", []) or []
+        bench_from_col = row.get("bench", None)
+        if bench_from_col is not None and isinstance(bench_from_col, list):
+            bench = bench_from_col
+        else:
+            bench = [p for p in all_players if p not in starters]
 
-def build_driver(headless=True):
-    opts = Options()
-    if headless:
-        opts.add_argument("--headless=new")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--window-size=1400,1000")
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+        for p in starters:
+            r = row.to_dict()
+            r["OwnerLabel"] = owner
+            r["player"] = p
+            r["slot"] = "Starter"
+            rows.append(r)
 
-def click_show_more_until_done(driver, table_container, wait, pause=0.8, max_clicks=100):
-    left_rows_css = ".Table--fixed-left tbody tr.Table__TR[data-idx]"
+        for p in bench:
+            r = row.to_dict()
+            r["OwnerLabel"] = owner
+            r["player"] = p
+            r["slot"] = "Bench"
+            rows.append(r)
 
-    def row_count():
-        return len(table_container.find_elements(By.CSS_SELECTOR, left_rows_css))
+    if not rows:
+        return pd.DataFrame()
 
-    clicks = 0
-    prev = row_count()
+    out = pd.DataFrame(rows)
+    keep_cols = [c for c in ["OwnerLabel", "player", "slot", "wins", "losses", "points_for", "points_against", "streak", "seed"] if c in out.columns]
+    base_cols = [c for c in ["OwnerLabel", "player", "slot"] if c in out.columns]
+    keep_cols = list(dict.fromkeys(base_cols + keep_cols))
+    return out[keep_cols] if keep_cols else out
 
-    while clicks < max_clicks:
-        links = driver.find_elements(By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")
-        link = next((x for x in links if x.is_displayed() and x.is_enabled()), None)
-        if not link:
-            break
+def fantasy_rosters_pivot(df):
+    owners = df.groupby("OwnerLabel")
+    rows = []
+    for owner, g in owners:
+        starters = g[g["slot"] == "Starter"]["player"].tolist()
+        bench = g[g["slot"] == "Bench"]["player"].tolist()
+        rows.append({
+            "Owner": owner,
+            "Starters": ", ".join(starters),
+            "Bench": ", ".join(bench)
+        })
+    return pd.DataFrame(rows)
 
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", link)
-        try:
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.AnchorLink.loadMore__link")))
-            link.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", link)
+FANTASY_STANDINGS = FANTASY_RAW.copy()
+FANTASY_STANDINGS["OwnerLabel"] = FANTASY_STANDINGS.apply(get_owner_label, axis=1)
+standings_cols = [c for c in ["OwnerLabel","wins","losses","ties","points_for","points_against","streak","seed"] if c in FANTASY_STANDINGS.columns]
+if standings_cols:
+    FANTASY_STANDINGS = FANTASY_STANDINGS[standings_cols]
+if "wins" in FANTASY_STANDINGS.columns:
+    sort_cols = ["wins"]
+    ascending = [False]
+    if "points_for" in FANTASY_STANDINGS.columns:
+        sort_cols.append("points_for")
+        ascending.append(False)
+    FANTASY_STANDINGS = FANTASY_STANDINGS.sort_values(by=sort_cols, ascending=ascending)
+FANTASY_ROSTERS = expand_fantasy(FANTASY_RAW)
 
-        time.sleep(pause)
-        new = row_count()
-        if new <= prev:
-            break
-        prev = new
-        clicks += 1
+TEAMS = ["All"] + sorted([
+    "BUF","MIA","NYJ","NE","BAL","CIN","PIT","CLE","TEN","IND","JAX","HOU",
+    "KC","LAC","LV","DEN","PHI","DAL","NYG","WAS","GB","MIN","DET","CHI",
+    "TB","NO","ATL","CAR","SF","SEA","LAR","ARI"
+])
 
-def scrape_espn_rushing_with_selenium(headless=True):
-    driver = build_driver(headless=headless)
-    wait = WebDriverWait(driver, 20)
-
-    try:
-        driver.get(URL_RUSH)
-        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.ResponsiveTable")))
-        rushing_block = driver.find_elements(By.CSS_SELECTOR, "div.ResponsiveTable")[0]
-
-        click_show_more_until_done(driver, rushing_block, wait)
-
-        # LEFT
-        player_summary = {}
-        for row in rushing_block.find_elements(By.CSS_SELECTOR, ".Table--fixed-left tbody tr.Table__TR"):
-            idx = row.get_attribute("data-idx")
-            if not idx:
-                continue
-            tds = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
-            rk = tds[0].text.strip() if tds else ""
-            try:
-                name = row.find_element(By.CSS_SELECTOR, "a.AnchorLink").text.strip()
-            except:
-                name = ""
-            try:
-                team = row.find_element(By.CSS_SELECTOR, ".athleteCell__teamAbbrev").text.strip()
-            except:
-                team = ""
-            player_summary[idx] = {"RK": rk, "Name": name, "Team": team}
-
-        # RIGHT
-        stat_headers = [th.text.strip() for th in rushing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller thead th")]
-        header_positions = {h: i for i, h in enumerate(stat_headers)}
-
-        desired_columns = ["POS","GP","ATT","YDS","AVG","LNG","BIG","TD","YDS/G","FUM","LST","FD"]
-
-        player_stats = {}
-        for row in rushing_block.find_elements(By.CSS_SELECTOR, ".Table__Scroller tbody tr.Table__TR"):
-            idx = row.get_attribute("data-idx")
-            if not idx:
-                continue
-            cells = row.find_elements(By.CSS_SELECTOR, "td.Table__TD")
-            texts = [c.text.strip() for c in cells]
-            line = {}
-            for h in desired_columns:
-                pos = header_positions.get(h, None)
-                line[h] = texts[pos] if (pos is not None and pos < len(texts)) else ""
-            player_stats[idx] = line
-
-        rows = []
-        for idx in sorted(set(player_summary) | set(player_stats), key=lambda x: int(x)):
-            rows.append({**player_summary.get(idx, {}), **player_stats.get(idx, {})})
-
-        order = ["RK","Name","Team"] + desired_columns
-        df_rushing = pd.DataFrame(rows)
-        df_rushing = df_rushing[[c for c in order if c in df_rushing.columns]]
-
-        # numeric conversion
-        numeric_cols = ["GP","ATT","YDS","AVG","LNG","BIG","TD","YDS/G","FUM","LST","FD"]
-        for col in numeric_cols:
-            if col in df_rushing.columns:
-                df_rushing[col] = pd.to_numeric(df_rushing[col], errors="coerce")
-
-        return df_rushing
-
-    finally:
-        driver.quit()
-
-# =========================================================
-# Shiny UI
-# =========================================================
-teams = ["All", "ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "DEN",
-         "DET", "GB", "HOU", "IND", "JAX", "KC", "LAC", "LAR", "LV", "MIA", "MIN",
-         "NE", "NO", "NYG", "NYJ", "PHI", "PIT", "SEA", "SF", "TB", "TEN", "WAS"]
-
-app_ui = ui.page_fluid(
-    ui.h2("NFL Player Stats (ESPN Scraper)"),
-    ui.input_select("stat_type", "Select Stat Type:", ["QB Passing", "RB Rushing"]),
-    ui.input_select("team_select", "Select Team:", teams),
-    ui.input_select("sort_by", "Sort By:", []),  # dynamically updated
-    ui.input_action_button("refresh", "Refresh Data"),
-    ui.output_table("player_table")
+app_ui = ui.page_navbar(
+    ui.nav_panel("Data Table", ui.output_data_frame("player_table")),
+    ui.nav_panel("Interactive Chart", ui.output_plot("stat_plot")),
+    ui.nav_panel("Player Comparison", ui.output_data_frame("comparison_table")),
+    ui.nav_panel("Fantasy Standings", ui.output_data_frame("fantasy_standings_table")),
+    ui.nav_panel("Fantasy Rosters", ui.output_data_frame("fantasy_rosters_table")),
+    ui.nav_panel("Top Fantasy Points", ui.output_plot("fantasy_points_plot")),
+    ui.nav_panel("Custom Stats", ui.output_plot("custom_stats_plot")),
+    title="🏈 ESPN NFL Player Stats Dashboard",
+    sidebar=ui.sidebar(
+        ui.input_select("stat_type", "Select Stat Type:", ["QB Passing","RB Rushing","WR Receiving"]),
+        ui.input_select("team_select", "Filter by Team:", TEAMS),
+        ui.input_text("player_search", "Search Player:"),
+        ui.input_select("player1", "Compare Player 1:", []),
+        ui.input_select("player2", "Compare Player 2:", []),
+        ui.input_action_button("refresh", "🔄 Refresh Data")
+    ),
+    selected="Data Table"
 )
 
-# =========================================================
-# Shiny Server
-# =========================================================
 def server(input, output, session):
-
-    # Update sort options dynamically
-    @reactive.effect
-    def _():
-        if input.stat_type() == "QB Passing":
-            session.send_input_message("sort_by", {"choices": ["YDS", "TD", "INT", "QBR", "RTG"]})
-        else:
-            session.send_input_message("sort_by", {"choices": ["YDS", "TD", "AVG", "YDS/G", "FUM"]})
-
-    @reactive.event(input.refresh)
+    @reactive.Calc
+    @reactive.event(input.refresh, input.stat_type)
     def df_raw():
-        if input.stat_type() == "QB Passing":
-            return scrape_qb_stats()
-        else:
-            return scrape_espn_rushing_with_selenium()
+        return CSV_DATA[input.stat_type()].copy()
+
+    @reactive.effect
+    def _populate_players():
+        df = df_raw()
+        players = sorted(df["Name"].dropna().unique()) if "Name" in df else []
+        ui.update_select("player1", choices=players)
+        ui.update_select("player2", choices=players)
 
     @reactive.Calc
     def df_filtered():
-        df = df_raw()
-        selected_team = input.team_select()
-        if "Team" in df.columns and selected_team != "All":
-            df = df[df["Team"] == selected_team]
+        df = df_raw().copy()
+        if input.team_select() != "All" and "Team" in df:
+            df = df[df["Team"] == input.team_select()]
+        if input.player_search() and "Name" in df:
+            df = df[df["Name"].str.contains(input.player_search(), case=False)]
 
-        sort_column = input.sort_by()
-        if sort_column in df.columns:
-            df = df.sort_values(by=sort_column, ascending=False)
+        numeric_cols = ["YDS", "TD", "REC", "RushYds", "RushTD", "RecYds", "RecTD"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace(",", "", regex=False).astype(float)
 
+        def num_col(name, default=0.0):
+            if name in df.columns:
+                return pd.to_numeric(df[name], errors="coerce").fillna(0.0)
+            return pd.Series(default, index=df.index, dtype=float)
+
+        df["FantasyPoints"] = 0.0
+        if input.stat_type() == "QB Passing":
+            pass_yds = num_col("YDS")
+            pass_td  = num_col("TD")
+            rush_yds = num_col("RushYds") if "RushYds" in df.columns else num_col("RUSH_YDS")
+            rush_td  = num_col("RushTD")  if "RushTD"  in df.columns else num_col("RUSH_TD")
+            df["FantasyPoints"] = (pass_yds/25 + pass_td*4 + rush_yds/10 + rush_td*6).round(2)
+        elif input.stat_type() == "RB Rushing":
+            rush_rec_yds = num_col("YDS") + num_col("RecYds")
+            rush_rec_td  = num_col("TD") + num_col("RecTD")
+            df["FantasyPoints"] = (rush_rec_yds/10 + rush_rec_td*6).round(2)
+        else:
+            rec_yds = num_col("YDS")
+            rec_td  = num_col("TD")
+            recs    = num_col("REC")
+            df["FantasyPoints"] = (rec_yds/10 + rec_td*6 + recs*1.0).round(2)
         return df
 
     @output
-    @render.table
+    @render.data_frame
     def player_table():
         return df_filtered()
 
-# =========================================================
-# Run the App
-# =========================================================
+    @output
+    @render.plot
+    def stat_plot():
+        df = df_filtered()
+        if df.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5,0.5,"No data to display.",ha="center",va="center",fontsize=12)
+            ax.axis("off")
+            return fig
+        x_stat, y_stat = "YDS","TD"
+        fig, ax = plt.subplots()
+        scatter = ax.scatter(df[x_stat], df[y_stat], picker=True)
+        ax.set_xlabel(x_stat)
+        ax.set_ylabel(y_stat)
+        ax.set_title(f"{input.stat_type()}: Yards vs Touchdowns")
+        cursor = mplcursors.cursor(scatter, hover=True)
+        cursor.connect("add", lambda sel: sel.annotation.set_text(df.iloc[sel.target.index]["Name"]))
+        try:
+            top = df.sort_values(by=y_stat, ascending=False).head(3)
+            for _, row in top.iterrows():
+                ax.annotate(row["Name"], (row[x_stat], row[y_stat]), xytext=(5,5), textcoords="offset points", fontsize=8)
+        except: pass
+        fig.tight_layout()
+        fig.subplots_adjust(top=0.9)
+        return fig
+
+    @output
+    @render.data_frame
+    def comparison_table():
+        df = df_filtered()
+        p1,p2 = input.player1(), input.player2()
+        if not p1 or not p2: return pd.DataFrame()
+        return pd.concat([df[df["Name"]==p1], df[df["Name"]==p2]])
+
+    @reactive.Calc
+    def df_fantasy_standings():
+        df = FANTASY_STANDINGS.copy()
+        if input.player_search() and "OwnerLabel" in df.columns:
+            df = df[df["OwnerLabel"].str.contains(input.player_search(), case=False)]
+        return df
+
+    @output
+    @render.data_frame
+    def fantasy_standings_table():
+        return df_fantasy_standings()
+
+    @reactive.Calc
+    def df_fantasy_rosters():
+        df = FANTASY_ROSTERS.copy()
+        if input.player_search() and "player" in df.columns:
+            df = df[df["player"].str.contains(input.player_search(), case=False)]
+        return fantasy_rosters_pivot(df)
+
+    @output
+    @render.data_frame
+    def fantasy_rosters_table():
+        return df_fantasy_rosters()
+
+    @output
+    @render.plot
+    def fantasy_points_plot():
+        df = df_filtered()
+        if df.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5,0.5,"No data to display.",ha="center",va="center",fontsize=12)
+            ax.axis("off")
+            return fig
+        df_top = df.sort_values(by="FantasyPoints", ascending=False).head(20).iloc[::-1]
+        fig, ax = plt.subplots(figsize=(6,8))
+        y_pos = range(len(df_top))
+        ax.scatter(df_top["FantasyPoints"], y_pos, s=100)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(df_top["Name"])
+        ax.set_xlabel("Fantasy Points")
+        ax.set_ylabel("Player")
+        ax.set_title(f"Top 20 {input.stat_type()} Fantasy Point Getters")
+        for i, row in zip(y_pos, df_top.itertuples()):
+            ax.text(row.FantasyPoints+0.5, i, f"{row.FantasyPoints:.1f}", va="center", fontsize=8)
+        fig.tight_layout()
+        fig.subplots_adjust(top=0.9)
+        return fig
+
+    @output
+    @render.plot
+    def custom_stats_plot():
+        df = df_filtered()
+        if df.empty:
+            fig, ax = plt.subplots()
+            ax.text(0.5,0.5,"No data to display.",ha="center",va="center",fontsize=12)
+            ax.axis("off")
+            return fig
+
+        custom_stats = ["YDS/G", "TGTS", "ATT", "GP", "TD"]
+        for stat in custom_stats:
+            if stat not in df.columns:
+                df[stat] = 0.0
+
+        df_norm = df.copy()
+        for stat in custom_stats:
+            min_val,max_val = df_norm[stat].min(), df_norm[stat].max()
+            df_norm[stat] = (df_norm[stat]-min_val)/(max_val-min_val+1e-6)
+
+        df_norm["CompositeScore"] = df_norm[custom_stats].sum(axis=1)
+        df_top = df_norm.sort_values("CompositeScore", ascending=False).head(20).iloc[::-1]
+
+        fig, ax = plt.subplots(figsize=(8,10))
+        y_pos = range(len(df_top))
+        bottom_vals = [0]*len(df_top)
+        colors = ["#4daf4a","#377eb8","#ff7f00","#984ea3","#e41a1c"]
+
+        for stat, color in zip(custom_stats, colors):
+            ax.barh(y_pos, df_top[stat], left=bottom_vals, color=color, edgecolor="white", label=stat)
+            bottom_vals = [i+j for i,j in zip(bottom_vals, df_top[stat])]
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(df_top["Name"])
+        ax.set_xlabel("Normalized Contribution to Composite Score")
+        ax.set_title(f"Top 20 {input.stat_type()} Players by Custom Stats")
+        ax.legend(title="Stats", bbox_to_anchor=(1.05,1), loc="upper left")
+
+        for i, total in zip(y_pos, df_top["CompositeScore"]):
+            ax.text(total + 0.01, i, f"{total:.2f}", va="center", fontsize=8, fontweight="bold")
+
+        context_text = "Composite Score = sum of normalized stats: YDS/G, TGTS, ATT, GP, TD\nEach bar shows contribution from each stat; higher = better performance"
+        ax.text(0, -7, context_text, fontsize=9, color="gray", va="top")
+
+        fig.tight_layout()
+        fig.subplots_adjust(top=0.88)
+        return fig
+
 app = App(app_ui, server)
