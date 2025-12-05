@@ -101,7 +101,7 @@ app_ui = ui.page_navbar(
     ui.nav_panel("Fantasy Rosters", ui.output_data_frame("fantasy_rosters_table")),
     ui.nav_panel("Top Fantasy Points", ui.output_plot("fantasy_points_plot")),
     ui.nav_panel("Custom Stats", ui.output_plot("custom_stats_plot")),
-    title="🏈 ESPN NFL Player Stats Dashboard",
+    title="NFL Player Stats Dashboard",
     sidebar=ui.sidebar(
         ui.input_select("stat_type", "Select Stat Type:", ["QB Passing","RB Rushing","WR Receiving"]),
         ui.input_select("team_select", "Filter by Team:", TEAMS),
